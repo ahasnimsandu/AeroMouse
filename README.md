@@ -51,12 +51,18 @@ build/AeroMouse.app/Contents/MacOS/AeroMouse --self-test
 
 | Gesture | Action |
 | --- | --- |
-| Thumb + index pinch | Left click |
-| Pinch and hold, then move | Drag |
-| Two quick pinches | Double click |
+| Tap: thumb pad against the side of the index finger | Left click |
+| Keep the contact and move | Drag |
+| Two quick taps | Double click |
 | Thumb + middle pinch | Right click |
 | Closed fist | Freeze the pointer |
 | Open hand | Move the pointer |
+
+The click gesture is the Apple Watch double-tap geometry rather than a pinch: the gap is measured
+from the thumb tip to the *edge* of the index finger (the segment from the first to the last
+knuckle), not to the fingertip. A tap anywhere along that edge registers, the reading does not
+change when the finger curls, and the measurement is divided by hand size so it does not depend on
+distance to the camera. Classic pinch-to-click is still available as a toggle.
 
 Every threshold has a hysteresis gap and a frame debounce, so a hand resting exactly on the
 boundary cannot produce flickering clicks. Losing the hand entirely releases a held button instead
@@ -130,12 +136,24 @@ After calibrating, the Accuracy card draws:
 - Deadband: no one-pixel shimmer while your hand is still
 - Click lock: the cursor does not twitch when you pinch
 
-## Eye tracking (beta, off by default)
+## Gaze assist
 
-A webcam has no depth sensor, so gaze from iris position plus head pose is accurate to a few degrees
-at best — far too noisy to steer a pointer. AeroMouse fits a gaze model implicitly while you
-calibrate (you were looking at the targets) and uses it only as a slow, clamped bias that removes a
-persistent offset while your hand is still. It cannot inject gaze jitter into the pointer.
+A webcam has no depth sensor, so gaze cannot steer a pointer on its own — but it is an excellent
+absolute reference, and that is what it is used for.
+
+The model takes both pupils' positions inside their eye openings, head yaw, pitch and roll, the head's
+position in frame and its apparent size (a distance cue), plus quadratic terms, and fits them to the
+screen with ridge regression. Eye opening is measured too: blink frames are rejected instead of
+poisoning the fit. Accuracy is reported by grouped cross-validation over the calibration targets, so
+the number in the panel is what you would actually get at a spot you did not calibrate on, and a
+model that cannot reach a useful threshold is discarded rather than applied weakly.
+
+At runtime the correction is gated three ways: gain follows the model's measured accuracy, the clamp
+scales with the same figure (a shaky model can only nudge), and it fades in only as the hand settles
+— which is exactly when precision matters and when a slow pull cannot smear intentional motion.
+
+Honest limit: on a webcam this is tens of pixels, not a few. It removes drift and lands you in the
+right neighbourhood; it does not replace the hand for fine pointing.
 
 ## Privacy
 

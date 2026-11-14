@@ -8,11 +8,39 @@ struct PointerPose: Codable, Equatable {
     var spread: Double = 1
 }
 
+/// Everything a webcam can tell you about where someone is looking: both pupils inside their eye
+/// openings, head orientation, head position and how open the eyes are.
 struct GazeFeatures: Codable, Equatable {
-    var irisX: Double = 0
+    var irisX: Double = 0        // mean pupil offset, −1…1 across the eye opening
     var irisY: Double = 0
-    var yaw: Double = 0
+    var yaw: Double = 0          // radians
     var roll: Double = 0
+    var leftX: Double = 0
+    var leftY: Double = 0
+    var rightX: Double = 0
+    var rightY: Double = 0
+    var pitch: Double = 0
+    var headX: Double = 0.5      // face box centre, image normalized (bottom-left origin)
+    var headY: Double = 0.5
+    var headScale: Double = 0.25 // face width in aspect-corrected units: distance from the camera
+    var openness: Double = 1     // 1 = open, 0 = blinking
+
+    /// Feature vector for the gaze regression. The quadratic terms let the projection bend, which
+    /// a plain linear fit cannot follow, and the head terms let the model tell "eyes moved" from
+    /// "whole head moved" — the difference between accurate and useless on a camera with no depth.
+    var vector: [Double] {
+        let logDistance = log(max(headScale, 1e-4) / 0.25)
+        return [
+            1,
+            leftX, leftY, rightX, rightY,
+            yaw, pitch, roll,
+            headX - 0.5, headY - 0.5, logDistance,
+            leftX * leftY, rightX * rightY,
+            yaw * pitch, yaw * roll,
+        ]
+    }
+
+    static let dimension = 15
 }
 
 /// One calibration observation: where the tracker said the hand was, and where the screen

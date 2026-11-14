@@ -38,6 +38,17 @@ struct Vec2: Equatable, Codable {
         return Vec2(a.x + (b.x - a.x) * c, a.y + (b.y - a.y) * c)
     }
 
+    /// Distance from `point` to the segment `a`–`b`. Used for contact detection: a tap is the
+    /// thumb meeting the *edge* of the index finger, not the two fingertips meeting in space.
+    static func distance(_ point: Vec2, toSegment a: Vec2, _ b: Vec2) -> Double {
+        let ab = b - a
+        let lengthSquared = ab.x * ab.x + ab.y * ab.y
+        guard lengthSquared > 1e-12 else { return point.distance(to: a) }
+        let ap = point - a
+        let t = min(max((ap.x * ab.x + ap.y * ab.y) / lengthSquared, 0), 1)
+        return point.distance(to: Vec2(a.x + ab.x * t, a.y + ab.y * t))
+    }
+
     func clamped(to rect: RectD) -> Vec2 {
         guard rect.isValid else { return self }
         return Vec2(min(max(x, rect.minX), rect.maxX), min(max(y, rect.minY), rect.maxY))

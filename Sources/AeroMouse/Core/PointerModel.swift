@@ -33,63 +33,140 @@ struct TrustGate: Codable, Equatable {
 
 // MARK: - Gaze model (beta)
 
+/// Maps webcam gaze to a screen position.
+///
+/// Both pupils, head orientation, head position and eye opening all take part, with quadratic
+/// terms, because the projection of a pupil onto a screen is not linear and a head that turns moves
+/// the eyes in the face without changing where they point. The reported accuracy is measured by
+/// grouped cross-validation over the calibration targets, so it is an honest figure rather than a
+/// fit residual — and a model that cannot beat a useful threshold is discarded instead of being
+/// applied weakly.
 struct GazeModel: Codable, Equatable {
     var coeffsU: [Double]
     var coeffsV: [Double]
     var rmsPixels: Double
+    var cvPixels: Double = 0
+    var samples: Int = 0
 
-    static func features(_ gaze: GazeFeatures) -> [Double] {
-        [1, gaze.irisX, gaze.irisY, gaze.yaw, gaze.roll]
-    }
-
-    func predict(_ gaze: GazeFeatures) -> Vec2 {
-        let f = GazeModel.features(gaze)
+    /// Nil when the model's feature layout does not match this build (an older calibration) or
+    /// when the prediction leaves the screen by a wide margin.
+    func predict(_ gaze: GazeFeatures) -> Vec2? {
+        let f = gaze.vector
+        guard f.count == coeffsU.count, coeffsU.count == coeffsV.count else { return nil }
         var u = 0.0
         var v = 0.0
-        for i in 0..<min(f.count, coeffsU.count) { u += f[i] * coeffsU[i] }
-        for i in 0..<min(f.count, coeffsV.count) { v += f[i] * coeffsV[i] }
-        return Vec2(u, v)
+        for i in 0..<f.count {
+            u += f[i] * coeffsU[i]
+            v += f[i] * coeffsV[i]
+        }
+        let point = Vec2(u, v)
+        guard point.isValid, abs(point.x - 0.5) < 0.8, abs(point.y - 0.5) < 0.8 else { return nil }
+        return point
     }
 
-    /// Ridge regression from iris/head-pose features to screen position. Fitted implicitly
-    /// while you look at the calibration targets.
-    static func fit(_ pairs: [(features: GazeFeatures, target: Vec2)], screen: RectD) -> GazeModel? {
-        guard pairs.count >= 30 else { return nil }
-        let distinct = Set(pairs.map { "\(Int($0.target.x * 24)):\(Int($0.target.y * 24))" }).count
-        guard distinct >= 5 else { return nil }
+    typealias Pair = (features: GazeFeatures, target: Vec2, weight: Double)
 
-        let dim = 5
-        var ata = [[Double]](repeating: [Double](repeating: 0, count: dim), count: dim)
-        var bu = [Double](repeating: 0, count: dim)
-        var bv = [Double](repeating: 0, count: dim)
+    private static func solve(_ pairs: [Pair], _ coordinate: (Vec2) -> Double) -> [Double]? {
+        let dimension = GazeFeatures.dimension
+        var rows: [[Double]] = []
+        var rhs: [Double] = []
+        rows.reserveCapacity(pairs.count + dimension)
 
         for pair in pairs {
-            let f = GazeModel.features(pair.features)
-            for a in 0..<dim {
-                bu[a] += f[a] * pair.target.x
-                bv[a] += f[a] * pair.target.y
-                for b in 0..<dim { ata[a][b] += f[a] * f[b] }
-            }
+            let root = max(pair.weight, 1e-3).squareRoot()
+            rows.append(pair.features.vector.map { $0 * root })
+            rhs.append(coordinate(pair.target) * root)
         }
-        let trace = (0..<dim).reduce(0.0) { $0 + ata[$1][$1] }
-        let lambda = max(trace * 0.002, 1e-9)
-        for a in 0..<dim { ata[a][a] += lambda }
+        guard rows.count > dimension else { return nil }
 
-        guard let cu = Linalg.solve(ata, bu), let cv = Linalg.solve(ata, bv) else { return nil }
+        var energy = 0.0
+        for row in rows { for value in row { energy += value * value } }
+        let damping = max(energy / Double(rows.count * dimension) * 1e-4, 1e-14).squareRoot()
+        for column in 0..<dimension {
+            var row = [Double](repeating: 0, count: dimension)
+            row[column] = damping
+            rows.append(row)
+            rhs.append(0)
+        }
+        return Linalg.leastSquares(rows, rhs)
+    }
+
+    private static func pixelRMS(_ coeffsU: [Double], _ coeffsV: [Double],
+                                 _ pairs: [Pair], screen: RectD) -> Double {
+        guard !pairs.isEmpty else { return .infinity }
+        var total = 0.0
+        var weightSum = 0.0
+        for pair in pairs {
+            let f = pair.features.vector
+            guard f.count == coeffsU.count, f.count == coeffsV.count else { return .infinity }
+            var u = 0.0
+            var v = 0.0
+            for i in 0..<f.count {
+                u += f[i] * coeffsU[i]
+                v += f[i] * coeffsV[i]
+            }
+            let dx = (u - pair.target.x) * screen.width
+            let dy = (v - pair.target.y) * screen.height
+            guard dx.isFinite, dy.isFinite else { continue }
+            let w = max(pair.weight, 1e-3)
+            total += w * (dx * dx + dy * dy)
+            weightSum += w
+        }
+        guard weightSum > 0 else { return .infinity }
+        return (total / weightSum).squareRoot()
+    }
+
+    /// Fitted implicitly while you look at the calibration targets.
+    static func fit(_ pairs: [Pair], screen: RectD) -> GazeModel? {
+        // Blink frames and closed eyes carry no gaze at all; including them poisons the fit.
+        let usable = pairs.filter { $0.features.openness > 0.25 && $0.target.isValid
+                                    && $0.target.x.isFinite && $0.target.y.isFinite }
+        guard usable.count >= 40 else { return nil }
+        let cells = Set(usable.map { "\(Int($0.target.x * 20)):\(Int($0.target.y * 20))" })
+        guard cells.count >= 6 else { return nil }
+
+        guard let cu = solve(usable, { $0.x }), let cv = solve(usable, { $0.y }) else { return nil }
+
+        // Grouped k-fold over target cells: the error you would actually get at a spot you did not
+        // calibrate on, not the residual of the fit itself.
+        var foldOf: [String: Int] = [:]
+        for (index, cell) in cells.sorted().enumerated() { foldOf[cell] = index % 4 }
 
         var total = 0.0
-        for pair in pairs {
-            let prediction = Vec2(
-                (0..<dim).reduce(0.0) { $0 + GazeModel.features(pair.features)[$1] * cu[$1] },
-                (0..<dim).reduce(0.0) { $0 + GazeModel.features(pair.features)[$1] * cv[$1] }
-            )
-            let dx = (prediction.x - pair.target.x) * screen.width
-            let dy = (prediction.y - pair.target.y) * screen.height
-            total += dx * dx + dy * dy
+        var weightSum = 0.0
+        for fold in 0..<4 {
+            let training = usable.filter { foldOf["\(Int($0.target.x * 20)):\(Int($0.target.y * 20))"] != fold }
+            let testing = usable.filter { foldOf["\(Int($0.target.x * 20)):\(Int($0.target.y * 20))"] == fold }
+            guard training.count > GazeFeatures.dimension, !testing.isEmpty else { continue }
+            guard let fu = solve(training, { $0.x }), let fv = solve(training, { $0.y }) else { continue }
+            for pair in testing {
+                let f = pair.features.vector
+                guard f.count == fu.count, f.count == fv.count else { continue }
+                var u = 0.0
+                var v = 0.0
+                for i in 0..<f.count {
+                    u += f[i] * fu[i]
+                    v += f[i] * fv[i]
+                }
+                let dx = (u - pair.target.x) * screen.width
+                let dy = (v - pair.target.y) * screen.height
+                guard dx.isFinite, dy.isFinite else { continue }
+                let w = max(pair.weight, 1e-3)
+                total += w * (dx * dx + dy * dy)
+                weightSum += w
+            }
         }
-        let rms = (total / Double(pairs.count)).squareRoot()
-        guard rms.isFinite else { return nil }
-        return GazeModel(coeffsU: cu, coeffsV: cv, rmsPixels: rms)
+
+        let cvRMS = weightSum > 0 ? (total / weightSum).squareRoot() : .infinity
+        let inSample = pixelRMS(cu, cv, usable, screen: screen)
+        let reported = cvRMS.isFinite ? cvRMS : inSample
+        guard reported.isFinite else { return nil }
+        // A gaze model that cannot land within this is not helping anything; refusing it is
+        // better than pulling the pointer toward the wrong place.
+        guard reported < 170 else { return nil }
+
+        return GazeModel(coeffsU: cu, coeffsV: cv, rmsPixels: reported, cvPixels: cvRMS.isFinite ? cvRMS : 0,
+                         samples: usable.count)
     }
 }
 

@@ -16,6 +16,9 @@ struct HandFrame {
     var pose = PointerPose()
     var pinchIndex: Double = .infinity
     var pinchMiddle: Double = .infinity
+    /// Thumb pad to the *edge* of the index finger, in hand units. This is the Apple Watch tap
+    /// geometry: the two fingers meet along their sides, anywhere from the first knuckle to the tip.
+    var thumbContact: Double = .infinity
     var fistRatio: Double = 0
     var confidence: Double = 0
 
@@ -60,6 +63,9 @@ struct HandFrame {
                                 roll: atan2(middleMCP.y - wrist.y, middleMCP.x - wrist.x),
                                 spread: spread)
 
+        // Measured to the segment, not to the fingertip, so a tap on the side of the finger registers
+        // as easily as one at the tip — and so the reading does not change when the finger curls.
+        frame.thumbContact = Vec2.distance(thumbTip, toSegment: indexPIP, indexTip) / handScale
         frame.pinchIndex = thumbTip.distance(to: indexTip) / handScale
         frame.pinchMiddle = point(.middleTip).map { thumbTip.distance(to: $0) / handScale } ?? .infinity
 
@@ -157,10 +163,9 @@ final class VisionPipeline {
     private func makeFaceFrame(from observations: [VNFaceObservation]?) -> FaceFrame? {
         guard let face = observations?.first, let landmarks = face.landmarks else { return nil }
         let unit = CGSize(width: 1, height: 1)
+        let aspect = max(lastAspect, 0.1)
 
-        guard let leftPupil = landmarks.leftPupil?.pointsInImage(imageSize: unit).first,
-              let rightPupil = landmarks.rightPupil?.pointsInImage(imageSize: unit).first,
-              let leftEye = landmarks.leftEye?.pointsInImage(imageSize: unit),
+        guard let leftEye = landmarks.leftEye?.pointsInImage(imageSize: unit),
               let rightEye = landmarks.rightEye?.pointsInImage(imageSize: unit),
               !leftEye.isEmpty, !rightEye.isEmpty else { return nil }
 
@@ -179,16 +184,39 @@ final class VisionPipeline {
         guard leftBox.width > 0.0015, leftBox.height > 0.0015,
               rightBox.width > 0.0015, rightBox.height > 0.0015 else { return nil }
 
-        // Iris position inside the eye opening: the core gaze signal on a camera without depth.
-        let leftOffsetX = (Double(leftPupil.x) - leftBox.midX) / leftBox.width
-        let leftOffsetY = (Double(leftPupil.y) - leftBox.midY) / leftBox.height
-        let rightOffsetX = (Double(rightPupil.x) - rightBox.midX) / rightBox.width
-        let rightOffsetY = (Double(rightPupil.y) - rightBox.midY) / rightBox.height
+        // Iris position inside each eye opening: the core gaze signal on a camera without depth.
+        func irisOffset(_ pupil: CGPoint?, _ box: CGRect) -> (x: Double, y: Double)? {
+            guard let pupil, box.width > 1e-6, box.height > 1e-6 else { return nil }
+            return ((Double(pupil.x) - box.midX) / box.width,
+                    (Double(pupil.y) - box.midY) / box.height)
+        }
 
-        let gaze = GazeFeatures(irisX: (leftOffsetX + rightOffsetX) / 2,
-                                irisY: (leftOffsetY + rightOffsetY) / 2,
+        let left = irisOffset(landmarks.leftPupil?.pointsInImage(imageSize: unit).first, leftBox)
+        let right = irisOffset(landmarks.rightPupil?.pointsInImage(imageSize: unit).first, rightBox)
+        // One visible pupil still carries usable gaze; only a fully missing gaze is rejected.
+        guard let primary = left ?? right else { return nil }
+        let secondary = left == nil ? primary : (right ?? primary)
+
+        // Eye opening relative to its own width: collapses during a blink, which is where most
+        // bad gaze samples come from. Width is aspect-corrected so the ratio is physical.
+        let eyeWidth = max(leftBox.width * aspect, 1e-6)
+        let aspectRatio = leftBox.height / eyeWidth
+        let openness = min(max((aspectRatio - 0.12) / 0.18, 0), 1)
+
+        let box = face.boundingBox
+        let gaze = GazeFeatures(irisX: (primary.x + secondary.x) / 2,
+                                irisY: (primary.y + secondary.y) / 2,
                                 yaw: face.yaw?.doubleValue ?? 0,
-                                roll: face.roll?.doubleValue ?? 0)
+                                roll: face.roll?.doubleValue ?? 0,
+                                leftX: left?.x ?? secondary.x,
+                                leftY: left?.y ?? secondary.y,
+                                rightX: right?.x ?? primary.x,
+                                rightY: right?.y ?? primary.y,
+                                pitch: face.pitch?.doubleValue ?? 0,
+                                headX: Double(box.midX),
+                                headY: Double(box.midY),
+                                headScale: Double(box.width) * aspect,
+                                openness: openness)
         return FaceFrame(gaze: gaze, confidence: Double(face.confidence))
     }
 }

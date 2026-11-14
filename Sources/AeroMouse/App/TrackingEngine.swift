@@ -30,6 +30,10 @@ struct TrackingSnapshot {
     var enhancing = false
     var cameraWidth: Int = 0
     var cameraHeight: Int = 0
+    var thumbContact: Double = .infinity
+    var gazeAccuracy: Double = 0
+    var gazeActive = false
+    var gazeOpenness: Double = 0
 }
 
 // MARK: - Engine
@@ -63,6 +67,8 @@ final class TrackingEngine {
     private var visionMilliseconds: Double = 0
     private var lastPublish: Double = 0
     private var lastHoverSample: Double = -10
+    private var lastSpeed: Double = 0
+    private var gazeActive = false
     private var smoothedLuma: Double = 0.5
     private var quality: Double = 1
     private var currentTargetFPS: Double = 60
@@ -237,7 +243,8 @@ final class TrackingEngine {
         let dt = lastFrameTime == 0 ? 1.0 / 60.0 : max(min(time - lastFrameTime, 0.2), 1.0 / 1000.0)
         lastFrameTime = time
 
-        let gesture = gestures.update(pinchIndex: hand.pinchIndex,
+        let gesture = gestures.update(thumbContact: hand.thumbContact,
+                                      pinchIndex: hand.pinchIndex,
                                       pinchMiddle: hand.pinchMiddle,
                                       fistRatio: hand.fistRatio,
                                       time: time,
@@ -256,20 +263,27 @@ final class TrackingEngine {
                          min(max(1 - anchor.y, 0), 1))
         var normalized = activeModel?.normalized(for: anchor, pose: hand.pose) ?? rough
 
-        // Gaze assist (beta): a slow, clamped bias toward where you are looking. It can correct
-        // a persistent offset but can never inject gaze jitter into the pointer.
-        if config.eyeAssistEnabled, let gazeModel = activeModel?.gaze, let gaze = lastGaze {
-            let rawGaze = gazeModel.predict(gaze)
-            if rawGaze.isValid {
-                let smoothedGaze = gazeFilter.filter(rawGaze, time: time, config: gazeSmoothing)
-                let desired = Vec2(
-                    min(max((smoothedGaze.x - normalized.x) * config.eyeAssistStrength, -0.03), 0.03),
-                    min(max((smoothedGaze.y - normalized.y) * config.eyeAssistStrength, -0.03), 0.03)
-                )
-                gazeAssist = Vec2.lerp(gazeAssist, desired, 1 - exp(-dt / 0.9))
-            }
+        // Gaze assist: a coarse absolute prior that removes drift. Three things keep it helpful
+        // rather than destructive — its gain follows the model's own cross-validated accuracy, the
+        // clamp follows the same figure (a shaky model can only nudge), and it is gated on the hand
+        // settling, because that is when precision matters and when a slow pull cannot smear
+        // intentional motion.
+        if config.eyeAssistEnabled, let gazeModel = activeModel?.gaze, let gaze = lastGaze,
+           gaze.openness > 0.30, let rawGaze = gazeModel.predict(gaze) {
+            let smoothedGaze = gazeFilter.filter(rawGaze, time: time, config: gazeSmoothing)
+            let accuracy = min(max(gazeModel.rmsPixels, 6), 200)
+            let accuracyWeight = exp(-accuracy / 90)          // 1.0 at 6 px, 0.33 at 100 px
+            let settle = 1 - PointerPipeline.smoothstep(lastSpeed, 60, 240)
+            let gain = config.eyeAssistStrength * accuracyWeight * settle
+            let limit = min(0.055, 2.4 * accuracy / max(screen.width, 1))
+            let offset = smoothedGaze - normalized
+            let desired = Vec2(min(max(offset.x * gain, -limit), limit),
+                               min(max(offset.y * gain, -limit), limit))
+            gazeAssist = Vec2.lerp(gazeAssist, desired, 1 - exp(-dt / 0.55))
+            gazeActive = true
         } else {
             gazeAssist = Vec2.lerp(gazeAssist, .zero, 1 - exp(-dt / 0.35))
+            gazeActive = false
         }
         normalized = normalized + gazeAssist
 
@@ -305,6 +319,7 @@ final class TrackingEngine {
         }
 
         jitterMeter.record(output.point, time: time)
+        lastSpeed = output.velocity.length
 
         // Calibration capture: a pinch is a precise sample; a settled hover is a cheap extra one.
         // Both are weighted by tracking quality, so a noisy dark frame cannot skew the fit.
@@ -354,6 +369,8 @@ final class TrackingEngine {
         snapshot.enhancing = enhancing
         snapshot.cameraWidth = capture.activeWidth
         snapshot.cameraHeight = capture.activeHeight
+        snapshot.gazeActive = gazeActive
+        snapshot.gazeOpenness = lastGaze?.openness ?? 0
         snapshot.sampleCount = samples
 
         if let hand {
@@ -362,6 +379,7 @@ final class TrackingEngine {
             snapshot.anchor = hand.anchor
             snapshot.pinchIndex = hand.pinchIndex
             snapshot.pinchMiddle = hand.pinchMiddle
+            snapshot.thumbContact = hand.thumbContact
             snapshot.fist = hand.fistRatio
         }
         if let gesture {
@@ -373,6 +391,7 @@ final class TrackingEngine {
 
         stateLock.lock()
         snapshot.calibrated = model != nil
+        snapshot.gazeAccuracy = model?.gaze?.rmsPixels ?? 0
         stateLock.unlock()
 
         DispatchQueue.main.async { [weak self] in

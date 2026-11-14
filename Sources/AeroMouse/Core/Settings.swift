@@ -7,7 +7,7 @@ struct AppSettings: Codable {
     var smoothing = SmoothingConfig()
     var gestures = GestureConfig()
     var eyeAssistEnabled: Bool = false
-    var eyeAssistStrength: Double = 0.22
+    var eyeAssistStrength: Double = 0.50
     var mirrorPreview: Bool = false
     var requestHighFrameRate: Bool = true
     var hoverSamplesEnabled: Bool = true

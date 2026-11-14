@@ -186,6 +186,10 @@ struct ControlPanelView: View {
                       tint: app.snapshot.jitter < 0.6 ? .green : .orange)
             MetricRow(label: "Thumb→index", value: pinchText(app.snapshot.pinchIndex))
             MetricRow(label: "Thumb→middle", value: pinchText(app.snapshot.pinchMiddle))
+            MetricRow(label: "Tap contact",
+                      value: app.snapshot.thumbContact.isFinite
+                        ? String(format: "%.3f", app.snapshot.thumbContact) : "—",
+                      tint: tapClosed ? .green : .secondary)
             MetricRow(label: "Fist", value: String(format: "%.2f", app.snapshot.fist))
             MetricRow(label: "Light", value: String(format: "%.0f%%", app.snapshot.luma * 100),
                       tint: app.snapshot.luma < 0.25 ? .orange : .secondary)
@@ -205,6 +209,11 @@ struct ControlPanelView: View {
                 if app.snapshot.hasFace { StatusPill(text: "Face", active: true) }
             }
         }
+    }
+
+    private var tapClosed: Bool {
+        let snapshot = app.snapshot
+        return snapshot.thumbContact.isFinite && snapshot.thumbContact < app.settings.gestures.tapOn
     }
 
     /// Resolution matters more than frame rate for pointing accuracy: twice the pixels halves the
@@ -275,7 +284,7 @@ struct ControlPanelView: View {
                               value: stats.residualNetIncluded ? "active" : "not needed",
                               tint: stats.residualNetIncluded ? .green : .secondary)
                     if let gaze = stats.gazeRMS {
-                        MetricRow(label: "Gaze model (beta)", value: String(format: "±%.0f px", gaze))
+                        MetricRow(label: "Gaze assist", value: String(format: "±%.0f px", gaze))
                     }
                 }
 
@@ -360,12 +369,27 @@ struct ControlPanelView: View {
     // MARK: Gestures
 
     private var gesturesCard: some View {
-        Card(title: "Gestures", subtitle: "Pinch thumb + index to click. Hold and move to drag.") {
+        Card(title: "Gestures",
+             subtitle: "Tap the thumb against the side of the index finger to click, the way double tap works on Apple Watch. Keep the contact and move to drag.") {
+            HStack(spacing: 22) {
+                Toggle("Tap to click (thumb taps index)", isOn: $app.settings.gestures.tapEnabled)
+                Toggle("Pinch to click", isOn: $app.settings.gestures.pinchClickEnabled)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            SliderRow(label: "Tap contact threshold", value: $app.settings.gestures.tapOn,
+                      range: 0.03...0.20, format: "%.3f",
+                      hint: "Gap between the thumb pad and the index finger's edge, in hand units. Lower means a firmer tap.")
+            SliderRow(label: "Tap release threshold", value: $app.settings.gestures.tapOff,
+                      range: 0.05...0.30, format: "%.3f",
+                      hint: "Keep this above the contact threshold — that gap is what stops a resting thumb from clicking twice.")
             SliderRow(label: "Pinch close threshold", value: $app.settings.gestures.pinchOn,
                       range: 0.20...0.80, format: "%.2f")
+                .disabled(!app.settings.gestures.pinchClickEnabled)
             SliderRow(label: "Pinch release threshold", value: $app.settings.gestures.pinchOff,
                       range: 0.30...1.00, format: "%.2f",
                       hint: "Always keep release above close: that gap is the anti-flicker hysteresis.")
+                .disabled(!app.settings.gestures.pinchClickEnabled)
             HStack(spacing: 22) {
                 Toggle("Right click (thumb + middle)", isOn: $app.settings.gestures.rightClickEnabled)
                 Toggle("Double click", isOn: $app.settings.gestures.doubleClickEnabled)
@@ -379,19 +403,29 @@ struct ControlPanelView: View {
     // MARK: Eyes
 
     private var eyeCard: some View {
-        Card(title: "Eye assist (beta)",
-             subtitle: "A webcam has no depth sensor, so gaze is far too noisy to steer a pointer. It is used only as a slow, clamped bias that removes a persistent offset while your hand is still.") {
+        Card(title: "Gaze assist",
+             subtitle: "Both pupils, head angle and head position are regressed onto the screen and cross-validated over your calibration targets. It acts as a precise absolute prior: it pulls the pointer onto what you are looking at while your hand settles, and steps out of the way while you move.") {
             Toggle("Enable gaze assist", isOn: $app.settings.eyeAssistEnabled)
                 .toggleStyle(.switch)
             SliderRow(label: "Strength", value: $app.settings.eyeAssistStrength,
-                      range: 0.0...0.6, format: "%.2f")
+                      range: 0.0...0.95, format: "%.2f",
+                      hint: "How much of the gaze offset is applied. The clamp scales with the model's own accuracy, so a weak model can only nudge.")
                 .disabled(!app.settings.eyeAssistEnabled)
             if let gaze = app.model?.stats.gazeRMS {
-                MetricRow(label: "Gaze model error", value: String(format: "±%.0f px", gaze))
+                MetricRow(label: "Model accuracy (held-out)",
+                          value: String(format: "±%.0f px", gaze),
+                          tint: gaze < 60 ? .green : .orange)
             } else {
-                Text("Gaze model trains automatically when a face is visible during calibration.")
+                Text("Gaze trains itself from the calibration dots — keep your face in frame while you calibrate.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+            }
+            if app.snapshot.hasFace {
+                MetricRow(label: "Live correction",
+                          value: app.snapshot.gazeActive ? "applying" : "waiting for the hand to settle",
+                          tint: app.snapshot.gazeActive ? .green : .secondary)
+                MetricRow(label: "Eye openness",
+                          value: String(format: "%.0f%%", app.snapshot.gazeOpenness * 100))
             }
         }
     }

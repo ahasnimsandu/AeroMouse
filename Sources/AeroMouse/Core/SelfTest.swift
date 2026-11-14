@@ -39,6 +39,7 @@ enum SelfTest {
         handAnchor(&runner)
         cameraModes(&runner)
         localCorrection(&runner)
+        gazeModel(&runner)
         calibrationEndToEnd(&runner)
     }
 
@@ -264,55 +265,162 @@ enum SelfTest {
     // MARK: Gestures
 
     private static func gestures(_ runner: inout SelfTestRunner) {
-        let recognizer = GestureRecognizer()
         var config = GestureConfig()
         config.minDownFrames = 2
         config.minUpFrames = 2
 
-        var events: [PointerEvent] = []
-        var time = 0.0
-        let approach = stride(from: 0.90, through: 0.30, by: -0.02).map { $0 }
-            + stride(from: 0.32, through: 0.90, by: 0.02).map { $0 }
-        for value in approach {
-            time += 1.0 / 60.0
-            let out = recognizer.update(pinchIndex: value, pinchMiddle: 1.4, fistRatio: 0.1,
-                                        time: time, config: config)
-            events.append(contentsOf: out.events)
+        func count(_ events: [PointerEvent]) -> (down: Int, up: Int) {
+            let downs = events.filter { if case .leftDown = $0 { return true }; return false }.count
+            return (downs, events.filter { $0 == .leftUp }.count)
         }
-        let downs = events.filter { if case .leftDown = $0 { return true }; return false }.count
-        let ups = events.filter { $0 == .leftUp }.count
-        runner.check("pinch hover produces exactly one click", downs == 1 && ups == 1,
-                     "\(downs) down, \(ups) up")
 
-        // Two quick pinches inside the double-click window must carry clickState 2.
-        let dc = GestureRecognizer()
-        var dcEvents: [PointerEvent] = []
-        var t = 0.0
+        // Tap: the thumb meets the index finger edge and lets go again.
+        let tap = GestureRecognizer()
+        var tapEvents: [PointerEvent] = []
+        var time = 0.0
+        for contact in [0.40, 0.40, 0.06, 0.06, 0.06, 0.40, 0.40, 0.40] {
+            time += 1.0 / 60.0
+            tapEvents.append(contentsOf: tap.update(thumbContact: contact, pinchIndex: 0.95,
+                                                    pinchMiddle: 1.4, fistRatio: 0.1,
+                                                    time: time, config: config).events)
+        }
+        let tapCounts = count(tapEvents)
+        runner.check("thumb tap produces exactly one click",
+                     tapCounts.down == 1 && tapCounts.up == 1,
+                     "\(tapCounts.down) down, \(tapCounts.up) up")
+
+        // An open hand held in front of the camera must never click, however long it is watched —
+        // even with the fingertips close together, which used to fire the pinch threshold.
+        let hover = GestureRecognizer()
+        var hoverEvents: [PointerEvent] = []
+        var hoverTime = 0.0
+        for _ in 0..<120 {
+            hoverTime += 1.0 / 60.0
+            hoverEvents.append(contentsOf: hover.update(thumbContact: 0.30, pinchIndex: 0.30,
+                                                        pinchMiddle: 1.4, fistRatio: 0.1,
+                                                        time: hoverTime, config: config).events)
+        }
+        runner.check("an open hand never clicks", hoverEvents.isEmpty,
+                     "\(hoverEvents.count) events")
+
+        // Two taps inside the double-click window escalate the click state, as on a Watch.
+        let doubleTap = GestureRecognizer()
+        var doubleTapEvents: [PointerEvent] = []
+        var dt = 0.0
         for _ in 0..<2 {
-            for value in [0.9, 0.9, 0.30, 0.30, 0.30, 0.90, 0.90, 0.90] {
-                t += 1.0 / 60.0
-                dcEvents.append(contentsOf: dc.update(pinchIndex: value, pinchMiddle: 1.4,
-                                                      fistRatio: 0.1, time: t, config: config).events)
+            for contact in [0.40, 0.06, 0.06, 0.40, 0.40] {
+                dt += 1.0 / 60.0
+                doubleTapEvents.append(contentsOf: doubleTap.update(thumbContact: contact,
+                                                                    pinchIndex: 0.95,
+                                                                    pinchMiddle: 1.4, fistRatio: 0.1,
+                                                                    time: dt, config: config).events)
             }
         }
-        let clickStates = dcEvents.compactMap { event -> Int? in
+        let clickStates = doubleTapEvents.compactMap { event -> Int? in
             if case .leftDown(let state) = event { return state }
             return nil
         }
-        runner.check("double pinch escalates click state", clickStates.last == 2,
+        runner.check("double tap escalates click state", clickStates.last == 2,
                      "states \(clickStates)")
+
+        // The old pinch-to-click still works when it is switched on.
+        var pinchConfig = config
+        pinchConfig.pinchClickEnabled = true
+        let pinch = GestureRecognizer()
+        var pinchEvents: [PointerEvent] = []
+        var pt = 0.0
+        let approach = stride(from: 0.90, through: 0.30, by: -0.02).map { $0 }
+            + stride(from: 0.32, through: 0.90, by: 0.02).map { $0 }
+        for value in approach {
+            pt += 1.0 / 60.0
+            pinchEvents.append(contentsOf: pinch.update(thumbContact: 0.40, pinchIndex: value,
+                                                        pinchMiddle: 1.4, fistRatio: 0.1,
+                                                        time: pt, config: pinchConfig).events)
+        }
+        let pinchCounts = count(pinchEvents)
+        runner.check("pinch click still works when enabled",
+                     pinchCounts.down == 1 && pinchCounts.up == 1,
+                     "\(pinchCounts.down) down, \(pinchCounts.up) up")
 
         // A closed fist must freeze and release any held button (no stuck drags).
         let fist = GestureRecognizer()
         var fistEvents: [PointerEvent] = []
         var mt = 0.0
-        for value in [0.3, 0.3, 0.3, 0.9, 0.9] {
+        for contact in [0.06, 0.06, 0.06, 0.40, 0.40] {
             mt += 1.0 / 60.0
-            fistEvents.append(contentsOf: fist.update(pinchIndex: value, pinchMiddle: 1.4,
-                                                      fistRatio: value > 0.85 ? 0.95 : 0.1,
+            fistEvents.append(contentsOf: fist.update(thumbContact: contact, pinchIndex: 0.95,
+                                                      pinchMiddle: 1.4,
+                                                      fistRatio: contact < 0.1 ? 0.1 : 0.95,
                                                       time: mt, config: config).events)
         }
-        runner.check("fist releases a held click", fistEvents.contains(.leftUp), "\(fistEvents.count) events")
+        runner.check("fist releases a held click", fistEvents.contains(.leftUp),
+                     "\(fistEvents.count) events")
+
+        // Contact geometry: the gap is measured to the finger's edge, not to its tip.
+        let touching = Vec2.distance(Vec2(0, 0), toSegment: Vec2(-1, 0), Vec2(1, 0))
+        let beside = Vec2.distance(Vec2(0, 2), toSegment: Vec2(-1, 0), Vec2(1, 0))
+        let beyond = Vec2.distance(Vec2(3, 4), toSegment: Vec2(-1, 0), Vec2(1, 0))
+        runner.check("segment distance matches geometry",
+                     touching < 1e-9 && abs(beside - 2) < 1e-9
+                        && abs(beyond - Vec2(2, 4).length) < 1e-9,
+                     String(format: "%.2f / %.2f / %.2f", touching, beside, beyond))
+    }
+
+    // MARK: Gaze
+
+    private static func gazeModel(_ runner: inout SelfTestRunner) {
+        let screen = RectD(x: 0, y: 0, width: 1920, height: 1080)
+        var rng = SplitMix64(seed: 77)
+
+        // Synthetic eyes: pupils drive the point being looked at, with independent per-eye noise
+        // and head pose held constant.
+        func gaze(_ irisX: Double, _ irisY: Double) -> GazeFeatures {
+            GazeFeatures(irisX: irisX, irisY: irisY, yaw: 0, roll: 0,
+                         leftX: irisX + (rng.nextDouble() - 0.5) * 0.05,
+                         leftY: irisY + (rng.nextDouble() - 0.5) * 0.05,
+                         rightX: irisX + (rng.nextDouble() - 0.5) * 0.05,
+                         rightY: irisY + (rng.nextDouble() - 0.5) * 0.05,
+                         pitch: 0, headX: 0.5, headY: 0.5, headScale: 0.25, openness: 1)
+        }
+
+        var pairs: [GazeModel.Pair] = []
+        for row in 0..<5 {
+            for column in 0..<5 {
+                for _ in 0..<3 {
+                    let irisX = -0.9 + 1.8 * Double(column) / 4
+                    let irisY = -0.9 + 1.8 * Double(row) / 4
+                    let target = Vec2(0.5 + 0.30 * irisX + (rng.nextDouble() - 0.5) * 0.008,
+                                      0.5 - 0.26 * irisY + (rng.nextDouble() - 0.5) * 0.008)
+                    pairs.append((gaze(irisX, irisY), target, 1))
+                }
+            }
+        }
+
+        guard let model = GazeModel.fit(pairs, screen: screen) else {
+            runner.check("gaze model fits from calibration pairs", false, "nil")
+            return
+        }
+        runner.check("gaze model fits from calibration pairs", true,
+                     String(format: "±%.0f px over %d samples", model.rmsPixels, model.samples))
+        runner.check("gaze accuracy is usable", model.rmsPixels < 45,
+                     String(format: "±%.1f px", model.rmsPixels))
+
+        // Between the calibration points, where a pointer would actually use it.
+        let probe = gaze(0.42, 0.18)
+        if let predicted = model.predict(probe) {
+            let expected = Vec2(0.5 + 0.30 * 0.42, 0.5 - 0.26 * 0.18)
+            let dx = (predicted.x - expected.x) * screen.width
+            let dy = (predicted.y - expected.y) * screen.height
+            let error = (dx * dx + dy * dy).squareRoot()
+            runner.check("gaze predicts between calibration points", error < 90,
+                         String(format: "%.0f px", error))
+        } else {
+            runner.check("gaze predicts between calibration points", false, "nil")
+        }
+
+        // A model trained against a different feature layout must be ignored, never applied.
+        let stale = GazeModel(coeffsU: [0, 0, 0, 0, 0], coeffsV: [0, 0, 0, 0, 0], rmsPixels: 10)
+        runner.check("stale gaze models are ignored", stale.predict(probe) == nil, "")
     }
 
     // MARK: Low light

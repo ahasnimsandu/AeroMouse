@@ -364,9 +364,9 @@ enum Calibrator {
         }
 
         // 5. Gaze model, fitted from the same targets (you were looking at them).
-        let gazePairs = usable.compactMap { sample -> (features: GazeFeatures, target: Vec2)? in
+        let gazePairs = usable.compactMap { sample -> GazeModel.Pair? in
             guard let gaze = sample.gaze else { return nil }
-            return (gaze, sample.target)
+            return (gaze, sample.target, sample.weight)
         }
         let gaze = GazeModel.fit(gazePairs, screen: screen)
 

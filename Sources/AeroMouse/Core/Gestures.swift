@@ -3,6 +3,12 @@ import Foundation
 // MARK: - Gesture configuration
 
 struct GestureConfig: Codable {
+    /// Tap: the thumb pad meets the edge of the index finger, like Apple Watch double tap.
+    /// Measured in hand units, so it does not depend on how big the hand or the frame is.
+    var tapEnabled: Bool = true
+    var tapOn: Double = 0.085         // contact is closed below this
+    var tapOff: Double = 0.135        // ...and open again above it (hysteresis)
+    var pinchClickEnabled: Bool = false
     var pinchOn: Double = 0.42        // thumb-index distance / hand scale to close
     var pinchOff: Double = 0.62       // ...and to open again (hysteresis gap kills flicker)
     var middlePinchOn: Double = 0.46
@@ -63,7 +69,8 @@ final class GestureRecognizer {
 
     var isLeftDown: Bool { leftDown }
 
-    func update(pinchIndex: Double,
+    func update(thumbContact: Double,
+                pinchIndex: Double,
                 pinchMiddle: Double,
                 fistRatio: Double,
                 time: Double,
@@ -104,9 +111,20 @@ final class GestureRecognizer {
             return output
         }
 
-        // ---- Left pinch (thumb + index) ----
+        // ---- Left click: finger tap (default) and/or pinch ----
+        // Two independent detectors, each with its own hysteresis, OR-ed into one button. Whichever
+        // is enabled decides the press; both release only when neither says "still closed", so the
+        // button cannot flicker between them.
+        let tapAvailable = config.tapEnabled && thumbContact.isFinite && thumbContact >= 0
+        let tapClosed = tapAvailable && thumbContact < config.tapOn
+        let tapOpen = !tapAvailable || thumbContact > config.tapOff
+        let pinchClosed = config.pinchClickEnabled && pinchIndex < config.pinchOn
+        let pinchOpen = !config.pinchClickEnabled || pinchIndex > config.pinchOff
+        let wantsDown = tapClosed || pinchClosed
+        let wantsUp = tapOpen && pinchOpen
+
         if !leftDown {
-            if pinchIndex < config.pinchOn {
+            if wantsDown {
                 leftDownFrames += 1
                 if leftDownFrames >= config.minDownFrames {
                     leftDown = true
@@ -123,7 +141,7 @@ final class GestureRecognizer {
                 leftDownFrames = 0
             }
         } else {
-            if pinchIndex > config.pinchOff {
+            if wantsUp {
                 leftUpFrames += 1
                 if leftUpFrames >= config.minUpFrames {
                     leftDown = false
