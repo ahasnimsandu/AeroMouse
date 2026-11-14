@@ -1,0 +1,7 @@
+build/
+.build/
+dist/
+*.dmg
+*.xcuserstate
+.DS_Store
+.dmg-stage/
