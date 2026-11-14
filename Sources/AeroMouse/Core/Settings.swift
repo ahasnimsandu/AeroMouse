@@ -14,6 +14,7 @@ struct AppSettings: Codable {
     var preferRightHand: Bool = true
     var lowLightEnhancement: Bool = true
     var adaptiveFrameRate: Bool = true
+    var preferHighResolution: Bool = true
 }
 
 // MARK: - Persistence
@@ -32,9 +33,15 @@ enum ModelStore {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    /// Bumped whenever the meaning of the model's inputs changes (anchor point, coordinate space).
+    /// An older model would silently produce a wildly wrong mapping, so it is discarded instead.
+    static let requiredModelVersion = 4
+
     static func loadModel() -> PointerModel? {
-        guard let data = try? Data(contentsOf: modelURL) else { return nil }
-        return try? JSONDecoder().decode(PointerModel.self, from: data)
+        guard let data = try? Data(contentsOf: modelURL),
+              let model = try? JSONDecoder().decode(PointerModel.self, from: data),
+              model.version >= requiredModelVersion else { return nil }
+        return model
     }
 
     static func saveModel(_ model: PointerModel) {

@@ -179,7 +179,7 @@ struct ControlPanelView: View {
 
     private var liveMetricsCard: some View {
         Card(title: "Live") {
-            MetricRow(label: "Camera", value: String(format: "%.0f fps", app.snapshot.fps))
+            MetricRow(label: "Camera", value: cameraText)
             MetricRow(label: "Vision per frame", value: String(format: "%.1f ms", app.snapshot.visionMilliseconds))
             MetricRow(label: "Residual jitter",
                       value: String(format: "%.2f px", app.snapshot.jitter),
@@ -207,9 +207,23 @@ struct ControlPanelView: View {
         }
     }
 
+    /// Resolution matters more than frame rate for pointing accuracy: twice the pixels halves the
+    /// landmark error, and that error is multiplied again on the way to the screen.
+    private var cameraText: String {
+        let snapshot = app.snapshot
+        let resolution = snapshot.cameraWidth > 0
+            ? "\(snapshot.cameraWidth)×\(snapshot.cameraHeight)"
+            : "—"
+        return String(format: "%@ · %.0f fps", resolution, snapshot.fps)
+    }
+
     private var lowLightCard: some View {
         Card(title: "Low light & GPU",
              subtitle: "Hand pose runs on the Neural Engine. Dim frames get GPU tone mapping, temporal averaging and a longer camera exposure.") {
+            Toggle("HD capture (sharper landmarks, restart to apply)",
+                   isOn: $app.settings.preferHighResolution)
+                .toggleStyle(.switch)
+                .controlSize(.small)
             Toggle("Enhance dark frames (GPU)", isOn: $app.settings.lowLightEnhancement)
                 .toggleStyle(.switch)
                 .controlSize(.small)

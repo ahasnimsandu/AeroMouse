@@ -77,19 +77,27 @@ settled hover near it (cheap extra coverage). Then:
 3. **The good ones are blended** by inverse error with clearly worse fits dropped, then a second,
    smaller quadratic stage is fitted on the blend's residual. It is a cascade: each stage only
    learns what the previous one missed.
-4. **A neural residual network** (2 hidden layers, trained from scratch with Adam on your own
+4. **A local residual stage** re-fits a small weighted quadratic around each query point using only
+   the nearby samples. Global fits have to average away curvature between the dots — and those
+   gaps are where you actually use the pointer. Measured against a synthetic truth that bends
+   mid-cell, this cuts 22.1 px to 12.9 px, and it fades out where samples are sparse.
+5. **A neural residual network** (2 hidden layers, trained from scratch with Adam on your own
    samples) learns what geometry cannot express — depth changes, wrist roll, finger spread. It is
    kept only when cross-validation says it helps, and its influence fades out outside the
-   calibrated area so it cannot extrapolate wildly.
+   calibrated area so it cannot extrapolate wildly. It is skipped when the local stage wins, so the
+   two never double-correct the same residual.
 
 The panel reports median and p95 error, before and after, on held-out cells. On the synthetic
-harness the full stack takes **8.4 px → 2.0 px median (4.3×)** with a 4.6 px p95.
+harness the full stack takes **8.4 px → 1.8 px median (4.6×)** with a 4.2 px p95.
 
 ## Low light and weak cameras
 
 Vision's hand-pose network already runs on the Neural Engine, so the remaining wins are in the
 signal rather than the model:
 
+- **Sharp landmarks first.** The camera captures at 1280×720 by default instead of 640×480: twice
+  the pixels halves the landmark error, and that error is multiplied again on the way to the screen.
+  Turn *HD capture* off if you would rather have a constant 60 fps.
 - **Longer exposure.** In dim conditions the camera drops to 30 fps, which lets it integrate light
   for twice as long. That removes sensor noise at the source instead of denoising it afterwards.
 - **GPU frame conditioning** (Core Image on Metal): a tone-curve shadow lift, a light unsharp pass

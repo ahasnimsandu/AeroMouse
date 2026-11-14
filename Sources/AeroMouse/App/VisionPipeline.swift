@@ -7,8 +7,12 @@ import CoreGraphics
 struct HandFrame {
     var points: [VNHumanHandPoseObservation.JointName: Vec2] = [:]
     var confidences: [VNHumanHandPoseObservation.JointName: Double] = [:]
-    var anchorOpen: Vec2 = .zero     // stable open-hand pointer anchor
-    var anchorPinch: Vec2 = .zero    // thumb/index midpoint while pinching
+
+    /// The single pointer anchor: middle phalanx of the index finger, in aspect-corrected image
+    /// coordinates. It is deliberately *not* the fingertip — the tip travels a centimetre or two
+    /// when the finger curls into a pinch, and the anchor must not move when that happens.
+    var anchor: Vec2 = .zero
+
     var pose = PointerPose()
     var pinchIndex: Double = .infinity
     var pinchMiddle: Double = .infinity
@@ -22,17 +26,16 @@ struct HandFrame {
         func point(_ name: VNHumanHandPoseObservation.JointName) -> Vec2? { points[name] }
         func conf(_ name: VNHumanHandPoseObservation.JointName) -> Double { confidences[name] ?? 0 }
 
+        // Only joints the pointer genuinely needs are required. Anything else (the outer fingers)
+        // is optional, because a hand at the edge of frame or in poor light routinely loses them,
+        // and a dropped frame used to kill tracking entirely.
         guard let wrist = point(.wrist),
               let middleMCP = point(.middleMCP),
               let indexMCP = point(.indexMCP),
+              let indexPIP = point(.indexPIP),
               let indexDIP = point(.indexDIP),
               let indexTip = point(.indexTip),
-              let thumbTip = point(.thumbTip),
-              let middleTip = point(.middleTip),
-              let ringTip = point(.ringTip),
-              let littleTip = point(.littleTip),
-              let ringMCP = point(.ringMCP),
-              let littleMCP = point(.littleMCP) else {
+              let thumbTip = point(.thumbTip) else {
             return nil
         }
 
@@ -42,31 +45,49 @@ struct HandFrame {
         var frame = HandFrame(points: points, confidences: confidences)
 
         // Wrist roll tells the model how rotated the palm is; a homography cannot know this.
-        frame.pose = PointerPose(
-            handScale: handScale,
-            roll: atan2(middleMCP.y - wrist.y, middleMCP.x - wrist.x),
-            spread: littleTip.distance(to: indexTip) / handScale
-        )
+        // Palm width is used for spread rather than the gap between fingertips: it is a rigid
+        // distance across the knuckles, so it does not move when the fingers curl.
+        let spread: Double
+        if let littleMCP = point(.littleMCP) {
+            spread = indexMCP.distance(to: littleMCP) / handScale
+        } else if let littleTip = point(.littleTip) {
+            spread = littleTip.distance(to: indexTip) / handScale
+        } else {
+            spread = 1
+        }
+
+        frame.pose = PointerPose(handScale: handScale,
+                                roll: atan2(middleMCP.y - wrist.y, middleMCP.x - wrist.x),
+                                spread: spread)
 
         frame.pinchIndex = thumbTip.distance(to: indexTip) / handScale
-        frame.pinchMiddle = thumbTip.distance(to: middleTip) / handScale
+        frame.pinchMiddle = point(.middleTip).map { thumbTip.distance(to: $0) / handScale } ?? .infinity
 
-        // Fist detection: how close each fingertip has curled back to its knuckle.
-        let fingers: [(Vec2, Vec2)] = [(indexTip, indexMCP), (middleTip, middleMCP),
-                                       (ringTip, ringMCP), (littleTip, littleMCP)]
+        // Fist detection: how far each visible fingertip has curled back to its knuckle.
+        let fingers: [(VNHumanHandPoseObservation.JointName, VNHumanHandPoseObservation.JointName)] = [
+            (.indexTip, .indexMCP), (.middleTip, .middleMCP),
+            (.ringTip, .ringMCP), (.littleTip, .littleMCP),
+        ]
         var curl = 0.0
-        for (tip, knuckle) in fingers {
+        var counted = 0
+        for (tipName, knuckleName) in fingers {
+            guard let tip = point(tipName), let knuckle = point(knuckleName) else { continue }
             let ratio = tip.distance(to: knuckle) / handScale
             curl += 1 - min(max((ratio - 0.18) / 0.75, 0), 1)
+            counted += 1
         }
-        frame.fistRatio = curl / Double(fingers.count)
+        frame.fistRatio = counted > 0 ? curl / Double(counted) : 0
 
-        // Open anchor: weighted back from the very tip, which is the jitteriest landmark.
-        frame.anchorOpen = Vec2.lerp(indexTip, indexDIP, 0.45)
-        frame.anchorPinch = (thumbTip + indexTip) * 0.5
+        // The pointer anchor: halfway between the first and second index knuckle. Hovering,
+        // clicking and calibration all read this one point, so aiming and clicking cannot disagree.
+        frame.anchor = Vec2.lerp(indexDIP, indexPIP, 0.5)
 
-        frame.confidence = min(conf(.indexTip), min(conf(.indexDIP),
-                              min(conf(.thumbTip), min(conf(.middleMCP), conf(.wrist)))))
+        // Mean confidence over the joints that matter. Taking the minimum let one unlucky knuckle
+        // report a quality score near zero on a perfectly good frame.
+        let keyJoints: [VNHumanHandPoseObservation.JointName] = [
+            .wrist, .middleMCP, .indexMCP, .indexPIP, .indexDIP, .indexTip, .thumbTip,
+        ]
+        frame.confidence = keyJoints.map { conf($0) }.reduce(0, +) / Double(keyJoints.count)
         return frame
     }
 }
@@ -84,6 +105,7 @@ final class VisionPipeline {
     private let faceRequest = VNDetectFaceLandmarksRequest()
     private var frameIndex = 0
     private(set) var lastError: String?
+    private(set) var lastAspect: Double = 4.0 / 3.0
 
     func process(pixelBuffer: CVPixelBuffer,
                  time: Double) -> (hand: HandFrame?, face: FaceFrame?) {
@@ -100,21 +122,30 @@ final class VisionPipeline {
             return (nil, nil)
         }
 
-        let hand = makeHandFrame(from: handRequest.results)
+        let width = Double(CVPixelBufferGetWidth(pixelBuffer))
+        let height = Double(CVPixelBufferGetHeight(pixelBuffer))
+        lastAspect = height > 0 ? max(width / height, 0.1) : 4.0 / 3.0
+
+        let hand = makeHandFrame(from: handRequest.results, aspect: lastAspect)
         let face = runFace ? makeFaceFrame(from: faceRequest.results) : nil
         return (hand, face)
     }
 
     // MARK: Hand
 
-    private func makeHandFrame(from observations: [VNHumanHandPoseObservation]?) -> HandFrame? {
+    private func makeHandFrame(from observations: [VNHumanHandPoseObservation]?,
+                               aspect: Double) -> HandFrame? {
         guard let observation = observations?.first else { return nil }
         guard let recognized = try? observation.recognizedPoints(.all) else { return nil }
 
         var points: [VNHumanHandPoseObservation.JointName: Vec2] = [:]
         var confidences: [VNHumanHandPoseObservation.JointName: Double] = [:]
         for (name, point) in recognized where point.confidence > 0.1 {
-            points[name] = Vec2(Double(point.location.x), Double(point.location.y))
+            // Vision normalizes x and y independently, so a 4:3 frame squashes the hand
+            // horizontally. Scaling x by the aspect ratio restores a square-pixel space: distances,
+            // pinch ratios and wrist roll are then geometrically correct instead of depending on
+            // which way the hand happens to point.
+            points[name] = Vec2(Double(point.location.x) * aspect, Double(point.location.y))
             confidences[name] = Double(point.confidence)
         }
 

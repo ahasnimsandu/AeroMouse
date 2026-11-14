@@ -36,6 +36,9 @@ enum SelfTest {
         gestures(&runner)
         lowLight(&runner)
         landmarkFiltering(&runner)
+        handAnchor(&runner)
+        cameraModes(&runner)
+        localCorrection(&runner)
         calibrationEndToEnd(&runner)
     }
 
@@ -398,6 +401,175 @@ enum SelfTest {
         runner.check("weak detections cannot teleport a joint",
                      landed.distance(to: Vec2(0.30, 0.30)) < 0.25,
                      String(format: "drift %.3f", landed.distance(to: Vec2(0.30, 0.30))))
+    }
+
+    // MARK: Anchor
+
+    private static func handAnchor(_ runner: inout SelfTestRunner) {
+        // A plausible pointing hand in aspect-corrected image space. The tip and its last joint
+        // swing toward the thumb as the finger curls into a pinch.
+        func joints(curl: Double) -> [VNHumanHandPoseObservation.JointName: Vec2] {
+            [
+                .wrist: Vec2(0.62, 0.40),
+                .middleMCP: Vec2(0.62, 0.60),
+                .indexMCP: Vec2(0.56, 0.63),
+                .indexPIP: Vec2(0.55, 0.75),
+                .indexDIP: Vec2(0.57 - 0.05 * curl, 0.80 - 0.07 * curl),
+                .indexTip: Vec2(0.56 - 0.10 * curl, 0.88 - 0.14 * curl),
+                .thumbTip: Vec2(0.45, 0.62),
+                .middleTip: Vec2(0.64, 0.92),
+                .ringTip: Vec2(0.72, 0.90),
+                .littleTip: Vec2(0.79, 0.85),
+                .ringMCP: Vec2(0.70, 0.60),
+                .littleMCP: Vec2(0.75, 0.57),
+            ]
+        }
+
+        guard let open = HandFrame.build(points: joints(curl: 0), confidences: [:]),
+              let pinched = HandFrame.build(points: joints(curl: 1), confidences: [:]) else {
+            runner.check("hand frame builds from a pointing hand", false, "nil")
+            return
+        }
+        runner.check("hand frame builds from a pointing hand", true, "")
+
+        let anchorTravel = open.anchor.distance(to: pinched.anchor)
+        let tipTravel = Vec2(0.56, 0.88).distance(to: Vec2(0.46, 0.74))
+        runner.check("pinch does not move the pointer anchor",
+                     anchorTravel < tipTravel * 0.35,
+                     String(format: "anchor %.3f vs fingertip %.3f", anchorTravel, tipTravel))
+
+        // The outer fingers are routinely lost at the edge of frame; the pointer must survive.
+        var partial = joints(curl: 0)
+        partial[.ringTip] = nil
+        partial[.littleTip] = nil
+        partial[.ringMCP] = nil
+        partial[.littleMCP] = nil
+        partial[.middleTip] = nil
+        let sparse = HandFrame.build(points: partial, confidences: [:])
+        runner.check("tracking survives a partially visible hand",
+                     sparse != nil && (sparse?.pinchMiddle.isInfinite ?? false), "")
+    }
+
+    // MARK: Camera modes
+
+    private static func cameraModes(_ runner: inout SelfTestRunner) {
+        let hd = CameraCapture.score(width: 1280, height: 720, maxRate: 30, preferHighResolution: true)
+        let vga = CameraCapture.score(width: 640, height: 480, maxRate: 60, preferHighResolution: true)
+        runner.check("accurate mode prefers 720p over a 60 fps sensor mode", hd > vga,
+                     String(format: "%.1f vs %.1f", hd, vga))
+
+        let fastHD = CameraCapture.score(width: 1280, height: 720, maxRate: 30, preferHighResolution: false)
+        let fastVGA = CameraCapture.score(width: 640, height: 480, maxRate: 60, preferHighResolution: false)
+        runner.check("fast mode prefers the small high-rate sensor mode", fastVGA > fastHD,
+                     String(format: "%.1f vs %.1f", fastVGA, fastHD))
+
+        let tiny = CameraCapture.score(width: 320, height: 240, maxRate: 60, preferHighResolution: true)
+        runner.check("modes below 640×480 are rejected", tiny == -Double.infinity, "")
+    }
+
+    // MARK: Local residual
+
+    private static func localCorrection(_ runner: inout SelfTestRunner) {
+        var rng = SplitMix64(seed: 909)
+        let screen = RectD(x: 0, y: 0, width: 1920, height: 1080)
+        let pose = PointerPose(handScale: 0.15, roll: 0, spread: 1.1)
+
+        func error(_ candidate: Vec2, _ expected: Vec2) -> Double {
+            let dx = (candidate.x - expected.x) * screen.width
+            let dy = (candidate.y - expected.y) * screen.height
+            return (dx * dx + dy * dy).squareRoot()
+        }
+
+        func median(_ values: [Double]) -> Double {
+            guard !values.isEmpty else { return 0 }
+            let sorted = values.sorted()
+            return sorted[sorted.count / 2]
+        }
+
+        // A truth that bends between the calibration dots. No single quadratic can follow it, which
+        // is the mid-cell error a user feels but a fit measured only at the dots never sees.
+        func truth(_ source: Vec2) -> Vec2 {
+            let u = (source.x - 0.42) / 0.24
+            let v = (source.y - 0.30) / 0.30
+            let ripple = 0.030 * sin(u * 7.5) * cos(v * 6.0)
+            return Vec2(min(max(u * 0.92 + 0.04 + ripple, 0), 1),
+                        min(max(v * 0.90 + 0.05 - ripple * 0.7, 0), 1))
+        }
+
+        var samples: [CalibrationSample] = []
+        for row in 0..<5 {
+            for column in 0..<5 {
+                for _ in 0..<3 {
+                    let source = Vec2(0.42 + Double(column) * 0.060 + (rng.nextDouble() - 0.5) * 0.010,
+                                      0.30 + Double(row) * 0.075 + (rng.nextDouble() - 0.5) * 0.010)
+                    samples.append(CalibrationSample(source: source,
+                                                     target: truth(source),
+                                                     weight: 1,
+                                                     group: row * 5 + column,
+                                                     pose: pose,
+                                                     gaze: nil))
+                }
+            }
+        }
+
+        guard let fitted = MapFitter.fit(kind: .poly2, samples: samples,
+                                        maxCenters: 220, referenceScale: 0.15) else {
+            runner.check("global fit covers the warped truth", false, "nil")
+            return
+        }
+
+        var pairs: [(mapped: Vec2, target: Vec2)] = []
+        for sample in samples {
+            guard let mapped = fitted.raw(sample.source, pose: sample.pose) else { continue }
+            pairs.append((mapped, sample.target))
+        }
+
+        // Sweep the two knobs so the shipped defaults come from measurement, not taste.
+        var tuned = ""
+        var tuning = [(bandwidth: 0.14, order: 2, neighbors: 40),
+                      (bandwidth: 0.16, order: 2, neighbors: 40),
+                      (bandwidth: 0.16, order: 2, neighbors: 60),
+                      (bandwidth: 0.18, order: 2, neighbors: 40)]
+        for config in tuning {
+            guard let candidate = LocalResidual(predictions: pairs,
+                                                bandwidth: config.bandwidth,
+                                                order: config.order,
+                                                neighbors: config.neighbors) else { continue }
+            var errors: [Double] = []
+            var probe = SplitMix64(seed: 5150)
+            for _ in 0..<400 {
+                let source = Vec2(0.40 + probe.nextDouble() * 0.27, 0.28 + probe.nextDouble() * 0.33)
+                guard let base = fitted.raw(source, pose: pose) else { continue }
+                let corrected = candidate.residual(at: base).map { base + $0 } ?? base
+                errors.append(error(corrected, truth(source)))
+            }
+            tuned += String(format: "%g/o%d=%.1f ", config.bandwidth, config.order, median(errors))
+        }
+
+        guard let local = LocalResidual(predictions: pairs) else {
+            runner.check("local residual stage builds", false, "nil")
+            return
+        }
+        runner.check("local residual stage builds", true, "\(local.count) entries · \(tuned)")
+
+        // Probe between the dots, where accuracy actually matters.
+        var before: [Double] = []
+        var after: [Double] = []
+        for _ in 0..<400 {
+            let source = Vec2(0.40 + rng.nextDouble() * 0.27, 0.28 + rng.nextDouble() * 0.33)
+            guard let base = fitted.raw(source, pose: pose) else { continue }
+            let expected = truth(source)
+            before.append(error(base, expected))
+            let corrected = local.residual(at: base).map { base + $0 } ?? base
+            after.append(error(corrected, expected))
+        }
+
+        let baseline = median(before)
+        let corrected = median(after)
+        runner.check("local stage cuts mid-cell error",
+                     corrected < baseline * 0.72,
+                     String(format: "%.1f px → %.1f px (%.2f×)", baseline, corrected,
+                            baseline / max(corrected, 1e-6)))
     }
 
     // MARK: End to end

@@ -28,6 +28,8 @@ struct TrackingSnapshot {
     var quality: Double = 0
     var luma: Double = 0
     var enhancing = false
+    var cameraWidth: Int = 0
+    var cameraHeight: Int = 0
 }
 
 // MARK: - Engine
@@ -55,7 +57,6 @@ final class TrackingEngine {
     private var calibrating = false
     private var recordedSamples = 0
 
-    private var anchorBlend: Double = 0
     private var gazeAssist = Vec2.zero
     private var lastGaze: GazeFeatures?
     private var lastFrameTime: Double = 0
@@ -118,6 +119,8 @@ final class TrackingEngine {
         stateLock.lock()
         self.settings = settings
         stateLock.unlock()
+        // The sensor mode is fixed when the session is configured, so this takes effect on restart.
+        capture.preferHighResolution = settings.preferHighResolution
     }
 
     func update(model: PointerModel?) {
@@ -214,7 +217,6 @@ final class TrackingEngine {
             gestures.reset()
             clickLock.reset()
             landmarkSmoother.reset()
-            anchorBlend = 0
             gazeAssist = .zero
             publish(hand: nil, gesture: nil, output: nil, samples: samplesSoFar, enhancing: enhance)
             return
@@ -241,14 +243,18 @@ final class TrackingEngine {
                                       time: time,
                                       config: config.gestures)
 
-        // Anchor handover: open hand uses a point slightly behind the fingertip (far less jitter),
-        // pinching uses the pinch point. Crossfading avoids a jump at click time.
-        let blendTarget = gestures.isLeftDown ? 1.0 : 0.0
-        anchorBlend += (blendTarget - anchorBlend) * min(dt / 0.09, 1)
-        let anchor = Vec2.lerp(hand.anchorOpen, hand.anchorPinch, anchorBlend)
+        // One anchor for both hovering and pinching. Swapping to the thumb/index midpoint on click
+        // used to slide the pointer while the user was still aiming; the anchor now sits on the
+        // middle phalanx, which the pinch does not move, and click lock absorbs what is left.
+        let anchor = hand.anchor
 
-        var normalized = activeModel?.normalized(for: anchor, pose: hand.pose)
-            ?? Vec2(1 - anchor.x, 1 - anchor.y)   // rough fallback before calibration
+        // Before calibration there is no model, so fall back to a plain mirrored, aspect-corrected
+        // mapping. It is rough, but it tracks the hand instead of pinning the pointer to a corner,
+        // which is what the old fallback did once coordinates became aspect-corrected.
+        let aspect = max(vision.lastAspect, 0.1)
+        let rough = Vec2(min(max(1 - anchor.x / aspect, 0), 1),
+                         min(max(1 - anchor.y, 0), 1))
+        var normalized = activeModel?.normalized(for: anchor, pose: hand.pose) ?? rough
 
         // Gaze assist (beta): a slow, clamped bias toward where you are looking. It can correct
         // a persistent offset but can never inject gaze jitter into the pointer.
@@ -346,12 +352,14 @@ final class TrackingEngine {
         snapshot.quality = quality
         snapshot.luma = smoothedLuma
         snapshot.enhancing = enhancing
+        snapshot.cameraWidth = capture.activeWidth
+        snapshot.cameraHeight = capture.activeHeight
         snapshot.sampleCount = samples
 
         if let hand {
             snapshot.hasHand = true
             snapshot.handPoints = hand.points
-            snapshot.anchor = hand.anchorOpen
+            snapshot.anchor = hand.anchor
             snapshot.pinchIndex = hand.pinchIndex
             snapshot.pinchMiddle = hand.pinchMiddle
             snapshot.fist = hand.fistRatio

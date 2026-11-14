@@ -133,11 +133,14 @@ struct CalibrationStats: Codable {
 /// The complete accuracy stack: a cross-validated blend of projective/quadratic/cubic/spline
 /// fits, optionally corrected by a neural residual net conditioned on hand pose.
 struct PointerModel: Codable {
-    var version: Int = 3
+    // 4: aspect-corrected coordinates and the middle-phalanx anchor.
+    var version: Int = 4
     var screen: RectD
     var maps: [FittedMap]
     /// Second stage: a spline fitted on the residual of the blended maps, in output space.
     var residualStage: FittedMap?
+    /// Third stage: local weighted-quadratic correction for curvature a global fit cannot follow.
+    var localResidual: LocalResidual?
     var mlp: MLP?
     var scaler: StandardScaler?
     var trust: TrustGate?
@@ -173,6 +176,12 @@ struct PointerModel: Codable {
         // Cascade, not average: the second stage only has to learn what the first missed.
         if let residualStage, let corrected = residualStage.raw(point, pose: pose), corrected.isValid {
             point = corrected
+        }
+
+        // Then the local stage, which knows where the calibration actually bends. It returns
+        // nothing outside the sampled area, so the global fit keeps charge of the edges.
+        if let localResidual, let correction = localResidual.residual(at: point) {
+            point += correction
         }
 
         if let mlp, let scaler, let trust {

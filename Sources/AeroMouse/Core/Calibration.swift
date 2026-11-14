@@ -229,13 +229,81 @@ enum Calibrator {
             }
         }
 
-        // 4. Neural residual net — only if cross-validation says it actually improves things.
+        // 3c. Local residual table. Global stages smooth over the curvature between calibration
+        // dots; a per-query local quadratic follows it, which is where most of the error in real
+        // use sits (nobody measures accuracy at the dots themselves).
+        var localStage: LocalResidual?
+        if usable.count >= 40 {
+            let localPredictions = CalibrationCV.run(samples: usable, folds: folds) { training in
+                let fitted = candidates.compactMap { candidate -> (FittedMap, Double)? in
+                    guard let refit = MapFitter.fit(kind: candidate.map.kind, samples: training,
+                                                    maxCenters: options.maxCenters,
+                                                    referenceScale: referenceScale) else { return nil }
+                    return (refit, candidate.map.weight)
+                }
+                let basePredict: (CalibrationSample) -> Vec2 = { sample in
+                    PointerModel.blend(fitted, at: sample.source, pose: sample.pose) ?? sample.source
+                }
+                var spline: FittedMap?
+                if residualStage != nil, let corrective = residualSamples(training, predict: basePredict) {
+                    spline = MapFitter.fit(kind: .poly2, samples: corrective,
+                                           maxCenters: options.maxCenters)
+                }
+                let mapper: (Vec2, PointerPose) -> Vec2 = { point, pose in
+                    let base = PointerModel.blend(fitted, at: point, pose: pose) ?? point
+                    if let spline, let corrected = spline.raw(base, pose: pose) { return corrected }
+                    return base
+                }
+                var pairs: [(mapped: Vec2, target: Vec2)] = []
+                pairs.reserveCapacity(training.count)
+                for sample in training {
+                    let mapped = mapper(sample.source, sample.pose)
+                    guard mapped.isValid else { continue }
+                    pairs.append((mapped, sample.target))
+                }
+                guard let local = LocalResidual(predictions: pairs) else {
+                    return { sample in mapper(sample.source, sample.pose) }
+                }
+                return { sample in
+                    let base = mapper(sample.source, sample.pose)
+                    if let correction = local.residual(at: base) { return base + correction }
+                    return base
+                }
+            }
+            let localMetrics = CalibrationCV.metrics(localPredictions, screen: screen)
+            log(String(format: "local residual rms %7.2f px  median %7.2f px",
+                       localMetrics.rms, localMetrics.median))
+            if localMetrics.rms.isFinite, localMetrics.rms < finalMetrics.rms * 0.995 {
+                let mapper: (Vec2, PointerPose) -> Vec2 = { point, pose in
+                    let base = PointerModel.blend(blendInputs, at: point, pose: pose) ?? point
+                    if let residualStage, let corrected = residualStage.raw(base, pose: pose) {
+                        return corrected
+                    }
+                    return base
+                }
+                var pairs: [(mapped: Vec2, target: Vec2)] = []
+                pairs.reserveCapacity(usable.count)
+                for sample in usable {
+                    let mapped = mapper(sample.source, sample.pose)
+                    guard mapped.isValid else { continue }
+                    pairs.append((mapped, sample.target))
+                }
+                localStage = LocalResidual(predictions: pairs)
+                if localStage != nil {
+                    finalMetrics = localMetrics
+                    finalPredictions = localPredictions
+                }
+            }
+        }
+
+        // 4. Neural residual net — only if cross-validation says it actually improves things, and
+        // never alongside the local stage: both learn the same residual and would double-correct.
         var finalNet: MLP?
         var finalScaler: StandardScaler?
         var finalTrust: TrustGate?
         var netReport: TrainingReport?
 
-        if options.useResidualNet, usable.count >= 40, groupCount >= 6 {
+        if options.useResidualNet, localStage == nil, usable.count >= 40, groupCount >= 6 {
             let netPredictions = CalibrationCV.run(samples: usable, folds: folds) { training in
                 let fitted = candidates.compactMap { candidate -> (FittedMap, Double)? in
                     guard let refit = MapFitter.fit(kind: candidate.map.kind, samples: training,
@@ -330,6 +398,7 @@ enum Calibrator {
         return PointerModel(screen: screen,
                             maps: candidates.map { $0.map },
                             residualStage: residualStage,
+                            localResidual: localStage,
                             mlp: finalNet,
                             scaler: finalScaler,
                             trust: finalTrust,
