@@ -64,6 +64,13 @@ knuckle), not to the fingertip. A tap anywhere along that edge registers, the re
 change when the finger curls, and the measurement is divided by hand size so it does not depend on
 distance to the camera. Classic pinch-to-click is still available as a toggle.
 
+A fixed threshold cannot work for a tap — one thumb rests at 0.10 from the finger, another at 0.30 —
+and guessing is what made ordinary hand movement click. The recogniser therefore learns the **resting
+gap** and requires a real drop below it, while an absolute ceiling stops a mis-learned baseline from
+turning rest into clicks. Press *Learn my tap…*, relax your hand, tap three times, and it places both
+thresholds from your own readings. The panel shows the resting gap, the level it fires below and the
+level it releases above, live.
+
 Every threshold has a hysteresis gap and a frame debounce, so a hand resting exactly on the
 boundary cannot produce flickering clicks. Losing the hand entirely releases a held button instead
 of leaving the mouse stuck down.
@@ -127,6 +134,21 @@ After calibrating, the Accuracy card draws:
 - an **error histogram** of every held-out sample, before versus after the stack;
 - **percentile bars** (p50/p75/p90/p95/max) in pixels, before versus after.
 
+## Sub-pixel finger tracking
+
+Vision gives an absolute landmark every frame, but its noise is a pixel or two in image space, and
+the screen mapping multiplies that into several screen pixels. Motion between two consecutive frames
+is far easier to measure precisely than position, so a small patch of the previous frame is matched
+against the current one, the match is refined to a fraction of a pixel by fitting a parabola through
+the minimum, and that patch is carried forward as the motion model. The landmark stays the absolute
+reference and corrects any drift, so this behaves like a Kalman filter whose process model is
+measured image evidence instead of an assumption about velocity.
+
+Every failure mode falls back to the landmark: weak texture, a failed or border-of-window match, a
+dark frame, an unrecognised pixel format, or a disagreement large enough to be a jump rather than
+motion. On a synthetic frame shifted by a deliberately fractional 6.4 px, the recovered motion is
+accurate to **0.05 px**. Toggle it off under *Low light & GPU* if you ever want the plain landmark.
+
 ## Smoothing
 
 - One Euro adaptive filter — low cutoff when still, high cutoff when moving fast
@@ -149,8 +171,9 @@ the number in the panel is what you would actually get at a spot you did not cal
 model that cannot reach a useful threshold is discarded rather than applied weakly.
 
 At runtime the correction is gated three ways: gain follows the model's measured accuracy, the clamp
-scales with the same figure (a shaky model can only nudge), and it fades in only as the hand settles
-— which is exactly when precision matters and when a slow pull cannot smear intentional motion.
+scales with the same figure (a shaky model can only nudge, a good one can pull up to 9% of the
+screen), and it fades in only as the hand settles — which is exactly when precision matters and when
+a slow pull cannot smear intentional motion. Strength is a slider from off to full.
 
 Honest limit: on a webcam this is tens of pixels, not a few. It removes drift and lands you in the
 right neighbourhood; it does not replace the hand for fine pointing.

@@ -199,6 +199,9 @@ struct ControlPanelView: View {
             MetricRow(label: "Pipeline",
                       value: app.snapshot.enhancing ? "ANE + GPU low-light" : "ANE hand pose",
                       tint: .secondary)
+            MetricRow(label: "Finger flow",
+                      value: app.snapshot.flowLocked ? "locked (sub-pixel)" : "landmark only",
+                      tint: app.snapshot.flowLocked ? .green : .secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Jitter trace").font(.caption2).foregroundStyle(.secondary)
                 JitterSparkline(values: app.jitterHistory)
@@ -212,8 +215,13 @@ struct ControlPanelView: View {
     }
 
     private var tapClosed: Bool {
+        // Use the detector's live level, not the configured ceiling: they differ once the resting
+        // gap is being learned, and the panel should show what the recogniser is actually doing.
         let snapshot = app.snapshot
-        return snapshot.thumbContact.isFinite && snapshot.thumbContact < app.settings.gestures.tapOn
+        guard snapshot.thumbContact.isFinite else { return false }
+        return snapshot.tapOnLevel > 0
+            ? snapshot.thumbContact < snapshot.tapOnLevel
+            : snapshot.thumbContact < app.settings.gestures.tapOn
     }
 
     /// Resolution matters more than frame rate for pointing accuracy: twice the pixels halves the
@@ -237,6 +245,9 @@ struct ControlPanelView: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
             Toggle("Adaptive frame rate", isOn: $app.settings.adaptiveFrameRate)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            Toggle("Sub-pixel finger tracking (optical flow)", isOn: $app.settings.fingerFlowEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.small)
             Text("Dropping to 30 fps doubles the camera's exposure time, which removes sensor noise before tracking instead of amplifying it afterwards. All 21 landmarks are also filtered and held briefly through dropouts.")
@@ -377,9 +388,28 @@ struct ControlPanelView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.small)
-            SliderRow(label: "Tap contact threshold", value: $app.settings.gestures.tapOn,
+            Toggle("Learn my resting gap automatically",
+                   isOn: $app.settings.gestures.tapAdaptiveThreshold)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            HStack(spacing: 10) {
+                Button(app.snapshot.tapTrainingActive ? "Cancel" : "Learn my tap…") {
+                    if app.snapshot.tapTrainingActive { app.cancelTapTraining() }
+                    else { app.beginTapTraining() }
+                }
+                if app.snapshot.tapTrainingActive {
+                    ProgressView(value: app.snapshot.tapTrainingProgress)
+                        .frame(width: 130)
+                }
+                Spacer()
+            }
+            MetricRow(label: "Resting gap", value: String(format: "%.3f", app.snapshot.contactBaseline))
+            MetricRow(label: "Fires below", value: String(format: "%.3f", app.snapshot.tapOnLevel),
+                      tint: app.snapshot.tapClosed ? .green : .secondary)
+            MetricRow(label: "Releases above", value: String(format: "%.3f", app.snapshot.tapOffLevel))
+            SliderRow(label: "Tap contact ceiling", value: $app.settings.gestures.tapOn,
                       range: 0.03...0.20, format: "%.3f",
-                      hint: "Gap between the thumb pad and the index finger's edge, in hand units. Lower means a firmer tap.")
+                      hint: "A click can never fire above this gap. The live threshold is this, or a real drop below your resting gap, whichever is smaller — that is what stops normal hand movement from clicking.")
             SliderRow(label: "Tap release threshold", value: $app.settings.gestures.tapOff,
                       range: 0.05...0.30, format: "%.3f",
                       hint: "Keep this above the contact threshold — that gap is what stops a resting thumb from clicking twice.")
@@ -408,7 +438,7 @@ struct ControlPanelView: View {
             Toggle("Enable gaze assist", isOn: $app.settings.eyeAssistEnabled)
                 .toggleStyle(.switch)
             SliderRow(label: "Strength", value: $app.settings.eyeAssistStrength,
-                      range: 0.0...0.95, format: "%.2f",
+                      range: 0.0...1.0, format: "%.2f",
                       hint: "How much of the gaze offset is applied. The clamp scales with the model's own accuracy, so a weak model can only nudge.")
                 .disabled(!app.settings.eyeAssistEnabled)
             if let gaze = app.model?.stats.gazeRMS {

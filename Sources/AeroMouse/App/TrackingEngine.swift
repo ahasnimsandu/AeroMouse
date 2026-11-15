@@ -34,6 +34,14 @@ struct TrackingSnapshot {
     var gazeAccuracy: Double = 0
     var gazeActive = false
     var gazeOpenness: Double = 0
+    var tapOnLevel: Double = 0
+    var tapOffLevel: Double = 0
+    var contactBaseline: Double = 0
+    var tapClosed = false
+    var flowLocked = false
+    var tapTrainingActive = false
+    var tapTrainingProgress: Double = 0
+    var tapSuggestion: TapTrainer.Suggestion?
 }
 
 // MARK: - Engine
@@ -52,6 +60,7 @@ final class TrackingEngine {
     private let gazeFilter = OneEuroFilter2D()
     private let enhancer = FrameEnhancer()
     private let landmarkSmoother = LandmarkSmoother()
+    private let fingerFlow = FingerFlow()
 
     private let stateLock = NSLock()
     private var settings = AppSettings()
@@ -69,6 +78,12 @@ final class TrackingEngine {
     private var lastHoverSample: Double = -10
     private var lastSpeed: Double = 0
     private var gazeActive = false
+
+    // Tap trainer. The camera queue owns the samples; the flag and result are exchanged under the lock.
+    private var tapTrainingActive = false
+    private var tapTrainingStartedAt: Double = 0
+    private var tapTrainingContacts: [Double] = []
+    private var tapSuggestion: TapTrainer.Suggestion?
     private var smoothedLuma: Double = 0.5
     private var quality: Double = 1
     private var currentTargetFPS: Double = 60
@@ -106,6 +121,7 @@ final class TrackingEngine {
         pointer.reset(at: cursor.position)
         landmarkSmoother.reset()
         enhancer.reset()
+        fingerFlow.reset()
         return nil
     }
 
@@ -118,6 +134,7 @@ final class TrackingEngine {
         gazeFilter.reset()
         landmarkSmoother.reset()
         enhancer.reset()
+        fingerFlow.reset()
         cursor.releaseButtons()
     }
 
@@ -174,6 +191,32 @@ final class TrackingEngine {
         pointer.reset(at: cursor.position)
     }
 
+    // MARK: Tap training
+
+    func beginTapTraining() {
+        stateLock.lock()
+        tapTrainingActive = true
+        tapSuggestion = nil
+        tapTrainingStartedAt = 0
+        stateLock.unlock()
+        gestures.reset()
+    }
+
+    func cancelTapTraining() {
+        stateLock.lock()
+        tapTrainingActive = false
+        tapTrainingStartedAt = 0
+        tapSuggestion = nil
+        stateLock.unlock()
+    }
+
+    /// Called once the UI has applied a suggestion, so it is not applied twice.
+    func clearTapSuggestion() {
+        stateLock.lock()
+        tapSuggestion = nil
+        stateLock.unlock()
+    }
+
     var cursorPosition: Vec2 { cursor.position }
 
     // MARK: Per-frame
@@ -186,6 +229,7 @@ final class TrackingEngine {
         let isCalibrating = calibrating
         let screen = screenRect
         let samplesSoFar = recordedSamples
+        let training = tapTrainingActive
         stateLock.unlock()
 
         // 1. Light measurement and GPU conditioning.
@@ -223,6 +267,9 @@ final class TrackingEngine {
             gestures.reset()
             clickLock.reset()
             landmarkSmoother.reset()
+            // A patch carried over from a hand that left the frame would latch onto whatever is at
+            // that position next time; the tracker has to start clean.
+            fingerFlow.reset()
             gazeAssist = .zero
             publish(hand: nil, gesture: nil, output: nil, samples: samplesSoFar, enhancing: enhance)
             return
@@ -240,20 +287,50 @@ final class TrackingEngine {
         let lightQuality = PointerPipeline.smoothstep(smoothedLuma, 0.10, 0.38)
         quality = min(max(0.7 * hand.confidence + 0.3 * lightQuality, 0), 1)
 
+        // Tap trainer: watch the contact reading for a few seconds while the user relaxes and taps.
+        if training {
+            if tapTrainingStartedAt == 0 { tapTrainingStartedAt = time }
+            if hand.thumbContact.isFinite, hand.thumbContact > 0 {
+                tapTrainingContacts.append(hand.thumbContact)
+            }
+            if time - tapTrainingStartedAt > 6.5 {
+                let suggestion = TapTrainer.suggestion(from: tapTrainingContacts)
+                stateLock.lock()
+                tapTrainingActive = false
+                tapSuggestion = suggestion
+                stateLock.unlock()
+                tapTrainingContacts.removeAll(keepingCapacity: true)
+                tapTrainingStartedAt = 0
+            }
+        }
+
         let dt = lastFrameTime == 0 ? 1.0 / 60.0 : max(min(time - lastFrameTime, 0.2), 1.0 / 1000.0)
         lastFrameTime = time
 
+        // While training, taps are data rather than input: no clicks may fire.
+        var gestureConfig = config.gestures
+        if training {
+            gestureConfig.tapEnabled = false
+            gestureConfig.pinchClickEnabled = false
+        }
         let gesture = gestures.update(thumbContact: hand.thumbContact,
                                       pinchIndex: hand.pinchIndex,
                                       pinchMiddle: hand.pinchMiddle,
                                       fistRatio: hand.fistRatio,
                                       time: time,
-                                      config: config.gestures)
+                                      config: gestureConfig)
 
         // One anchor for both hovering and pinching. Swapping to the thumb/index midpoint on click
         // used to slide the pointer while the user was still aiming; the anchor now sits on the
         // middle phalanx, which the pinch does not move, and click lock absorbs what is left.
-        let anchor = hand.anchor
+        //
+        // The flow tracker refines it: motion between frames is measurable to a fraction of a pixel,
+        // far below the landmark's own noise, and the landmark keeps the patch from drifting.
+        var anchor = hand.anchor
+        if config.fingerFlowEnabled,
+           let refined = fingerFlow.refine(anchor: anchor, buffer: analysedBuffer, time: time) {
+            anchor = refined
+        }
 
         // Before calibration there is no model, so fall back to a plain mirrored, aspect-corrected
         // mapping. It is rough, but it tracks the hand instead of pinning the pointer to a corner,
@@ -272,14 +349,14 @@ final class TrackingEngine {
            gaze.openness > 0.30, let rawGaze = gazeModel.predict(gaze) {
             let smoothedGaze = gazeFilter.filter(rawGaze, time: time, config: gazeSmoothing)
             let accuracy = min(max(gazeModel.rmsPixels, 6), 200)
-            let accuracyWeight = exp(-accuracy / 90)          // 1.0 at 6 px, 0.33 at 100 px
-            let settle = 1 - PointerPipeline.smoothstep(lastSpeed, 60, 240)
-            let gain = config.eyeAssistStrength * accuracyWeight * settle
-            let limit = min(0.055, 2.4 * accuracy / max(screen.width, 1))
+            let accuracyWeight = exp(-accuracy / 110)         // 1.0 at 6 px, 0.40 at 100 px
+            let settle = 1 - PointerPipeline.smoothstep(lastSpeed, 90, 320)
+            let gain = min(1.0, config.eyeAssistStrength * accuracyWeight * settle)
+            let limit = min(0.09, 3.6 * accuracy / max(screen.width, 1))
             let offset = smoothedGaze - normalized
             let desired = Vec2(min(max(offset.x * gain, -limit), limit),
                                min(max(offset.y * gain, -limit), limit))
-            gazeAssist = Vec2.lerp(gazeAssist, desired, 1 - exp(-dt / 0.55))
+            gazeAssist = Vec2.lerp(gazeAssist, desired, 1 - exp(-dt / 0.45))
             gazeActive = true
         } else {
             gazeAssist = Vec2.lerp(gazeAssist, .zero, 1 - exp(-dt / 0.35))
@@ -371,6 +448,14 @@ final class TrackingEngine {
         snapshot.cameraHeight = capture.activeHeight
         snapshot.gazeActive = gazeActive
         snapshot.gazeOpenness = lastGaze?.openness ?? 0
+        snapshot.flowLocked = fingerFlow.isLocked
+        stateLock.lock()
+        snapshot.tapTrainingActive = tapTrainingActive
+        snapshot.tapSuggestion = tapSuggestion
+        if tapTrainingActive, tapTrainingStartedAt > 0 {
+            snapshot.tapTrainingProgress = min(1, max(0, (CACurrentMediaTime() - tapTrainingStartedAt) / 6.5))
+        }
+        stateLock.unlock()
         snapshot.sampleCount = samples
 
         if let hand {
@@ -385,6 +470,10 @@ final class TrackingEngine {
         if let gesture {
             snapshot.dragging = gesture.dragging
             snapshot.frozen = gesture.frozen
+            snapshot.tapOnLevel = gesture.tapOnLevel
+            snapshot.tapOffLevel = gesture.tapOffLevel
+            snapshot.contactBaseline = gesture.contactBaseline
+            snapshot.tapClosed = gesture.tapClosed
         }
         snapshot.hasFace = lastGaze != nil
         snapshot.gaze = gazeAssist.length > 0.0005 ? gazeAssist : nil

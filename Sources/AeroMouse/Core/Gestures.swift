@@ -6,8 +6,14 @@ struct GestureConfig: Codable {
     /// Tap: the thumb pad meets the edge of the index finger, like Apple Watch double tap.
     /// Measured in hand units, so it does not depend on how big the hand or the frame is.
     var tapEnabled: Bool = true
-    var tapOn: Double = 0.085         // contact is closed below this
-    var tapOff: Double = 0.135        // ...and open again above it (hysteresis)
+    /// A fixed threshold cannot work: a relaxed thumb sits at 0.10 for one person and 0.30 for
+    /// another, so the detector learns the resting gap and requires a real drop below it. The
+    /// absolute value stays as a ceiling, so a bad baseline can never make it trigger on rest.
+    var tapAdaptiveThreshold: Bool = true
+    var tapOn: Double = 0.075         // absolute ceiling: never click above this gap
+    var tapOff: Double = 0.125
+    var tapBaseline: Double = 0.22    // learned resting gap, overwritten by the trainer
+    var tapDrop: Double = 0.05        // how far below the resting gap a tap must go
     var pinchClickEnabled: Bool = false
     var pinchOn: Double = 0.42        // thumb-index distance / hand scale to close
     var pinchOff: Double = 0.62       // ...and to open again (hysteresis gap kills flicker)
@@ -38,6 +44,11 @@ struct GestureOutput {
     var dragging: Bool = false
     var pinching: Bool = false
     var frozen: Bool = false
+    /// Live detector state, so the panel can show exactly what the recogniser is comparing against.
+    var tapOnLevel: Double = 0
+    var tapOffLevel: Double = 0
+    var contactBaseline: Double = 0
+    var tapClosed: Bool = false
 }
 
 // MARK: - Recognizer
@@ -55,6 +66,11 @@ final class GestureRecognizer {
     private var lastLeftUpTime = -100.0
     private var clickCount = 1
 
+    // Adaptive tap baseline state.
+    private var contactBaseline: Double = 0
+    private var baselineFrames = 0
+    private var lastUpdateTime: Double = -1
+
     func reset() {
         leftDown = false
         leftDownFrames = 0
@@ -65,7 +81,13 @@ final class GestureRecognizer {
         frozen = false
         lastLeftUpTime = -100.0
         clickCount = 1
+        contactBaseline = 0
+        baselineFrames = 0
+        lastUpdateTime = -1
     }
+
+    /// Resting gap the detector is currently assuming, for the panel and the self-test.
+    var learningBaseline: Double { contactBaseline }
 
     var isLeftDown: Bool { leftDown }
 
@@ -103,11 +125,47 @@ final class GestureRecognizer {
             frozen = false
         }
 
+        // ---- Adaptive tap baseline ----
+        // Learn the gap a *resting* hand shows. It follows the resting value up quickly (the hand
+        // changes pose, moves closer) and down very slowly, so a tap cannot drag the baseline with
+        // it and teach the detector to ignore the next tap.
+        let dt = lastUpdateTime < 0 ? 1.0 / 60.0 : max(min(time - lastUpdateTime, 0.2), 1.0 / 240.0)
+        lastUpdateTime = time
+        if thumbContact.isFinite, thumbContact > 0, !leftDown {
+            if contactBaseline <= 0 || baselineFrames < 40 {
+                contactBaseline = contactBaseline <= 0
+                    ? thumbContact
+                    : contactBaseline + (thumbContact - contactBaseline) * 0.2
+                baselineFrames += 1
+            } else {
+                let alpha = thumbContact > contactBaseline ? 2.5 : 0.06
+                contactBaseline += (thumbContact - contactBaseline) * min(alpha * dt, 1)
+            }
+        }
+
+        let baseline = contactBaseline > 0 ? contactBaseline : config.tapBaseline
+        // Until the resting gap has been observed for a moment, behave exactly like the plain
+        // absolute threshold: a hand that starts out mid-tap must still be able to click.
+        let adaptive = config.tapAdaptiveThreshold && baselineFrames >= 40
+        // Fire only below BOTH the learned drop and the absolute ceiling: the adaptive part handles
+        // anatomy, the ceiling stops a runaway baseline from turning rest into clicks.
+        let onLevel = adaptive
+            ? min(config.tapOn, max(0.02, baseline - config.tapDrop))
+            : config.tapOn
+        // Release must always sit below the *resting* gap, otherwise a hand whose thumb rests at
+        // 0.11 against a release threshold of 0.125 would hold the button down forever — a stuck
+        // drag. It also has to stay above the press level, or the button would chatter.
+        let offLevel = max(onLevel + 0.015,
+                           min(config.tapOff, baseline - config.tapDrop * 0.35))
+
         guard indexValid, !frozen else {
             // Landmark confidence dropped: keep the current button state, never synthesise clicks.
             output.dragging = leftDown && config.dragEnabled
             output.pinching = leftDown
             output.frozen = frozen
+            output.tapOnLevel = onLevel
+            output.tapOffLevel = offLevel
+            output.contactBaseline = baseline
             return output
         }
 
@@ -116,8 +174,8 @@ final class GestureRecognizer {
         // is enabled decides the press; both release only when neither says "still closed", so the
         // button cannot flicker between them.
         let tapAvailable = config.tapEnabled && thumbContact.isFinite && thumbContact >= 0
-        let tapClosed = tapAvailable && thumbContact < config.tapOn
-        let tapOpen = !tapAvailable || thumbContact > config.tapOff
+        let tapClosed = tapAvailable && thumbContact < onLevel
+        let tapOpen = !tapAvailable || thumbContact > offLevel
         let pinchClosed = config.pinchClickEnabled && pinchIndex < config.pinchOn
         let pinchOpen = !config.pinchClickEnabled || pinchIndex > config.pinchOff
         let wantsDown = tapClosed || pinchClosed
@@ -188,7 +246,48 @@ final class GestureRecognizer {
         output.dragging = leftDown && config.dragEnabled
         output.pinching = leftDown
         output.frozen = frozen
+        output.tapOnLevel = onLevel
+        output.tapOffLevel = offLevel
+        output.contactBaseline = baseline
+        output.tapClosed = tapClosed
         return output
+    }
+}
+
+// MARK: - Tap trainer
+
+/// Learns a user's own tap from a few seconds of contact readings: the resting gap (high quantile)
+/// and the tapped gap (low quantile). Thresholds are placed between the two, so the detector ends up
+/// tuned to this hand, this camera angle and this distance instead of to a guess.
+enum TapTrainer {
+    struct Suggestion: Equatable {
+        var onLevel: Double
+        var offLevel: Double
+        var baseline: Double
+        var resting: Double
+        var tapped: Double
+    }
+
+    static func suggestion(from contacts: [Double]) -> Suggestion? {
+        let usable = contacts.filter { $0.isFinite && $0 > 0 }.sorted()
+        guard usable.count >= 60 else { return nil }
+
+        func quantile(_ q: Double) -> Double {
+            let index = Int((Double(usable.count - 1) * q).rounded())
+            return usable[min(max(index, 0), usable.count - 1)]
+        }
+
+        let resting = quantile(0.85)
+        let tapped = quantile(0.06)
+        // A hand that never actually tapped gives no usable separation: leave the settings alone
+        // rather than silently teaching the detector to fire on anything.
+        guard resting - tapped > 0.045 else { return nil }
+
+        let span = resting - tapped
+        let onLevel = min(0.14, tapped + span * 0.30)
+        let offLevel = max(onLevel + 0.02, tapped + span * 0.60)
+        return Suggestion(onLevel: onLevel, offLevel: offLevel,
+                          baseline: resting, resting: resting, tapped: tapped)
     }
 }
 

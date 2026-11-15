@@ -33,8 +33,10 @@ struct LocalResidual: Codable, Equatable {
         self.bandwidth = bandwidth
         self.order = order
         self.neighbors = neighbors
-        samples.reserveCapacity(predictions.count * 4)
-        for prediction in predictions where prediction.mapped.isValid && prediction.target.isValid {
+        // Capped: every query point sorts the table, and this runs inside the frame loop.
+        let kept = predictions.filter { $0.mapped.isValid && $0.target.isValid }.suffix(400)
+        samples.reserveCapacity(kept.count * 4)
+        for prediction in kept {
             let mapped = prediction.mapped
             samples.append(mapped.x)
             samples.append(mapped.y)

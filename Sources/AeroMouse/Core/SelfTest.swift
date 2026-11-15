@@ -40,6 +40,8 @@ enum SelfTest {
         cameraModes(&runner)
         localCorrection(&runner)
         gazeModel(&runner)
+        tapRobustness(&runner)
+        fingerFlow(&runner)
         calibrationEndToEnd(&runner)
     }
 
@@ -678,6 +680,139 @@ enum SelfTest {
                      corrected < baseline * 0.72,
                      String(format: "%.1f px → %.1f px (%.2f×)", baseline, corrected,
                             baseline / max(corrected, 1e-6)))
+    }
+
+    // MARK: Tap tuning
+
+    private static func tapRobustness(_ runner: inout SelfTestRunner) {
+        let config = GestureConfig()
+        var rng = SplitMix64(seed: 404)
+
+        // A relaxed hand: thumb resting near the finger, slow drift, sensor noise. This is the case
+        // that used to click on its own during normal movement.
+        let resting = GestureRecognizer()
+        var restingEvents: [PointerEvent] = []
+        var time = 0.0
+        for frame in 0..<240 {
+            time += 1.0 / 60.0
+            let drift = 0.02 * sin(Double(frame) / 40.0)
+            let noise = (rng.nextDouble() - 0.5) * 0.006
+            restingEvents.append(contentsOf: resting.update(thumbContact: 0.115 + drift + noise,
+                                                            pinchIndex: 0.55, pinchMiddle: 1.2,
+                                                            fistRatio: 0.2, time: time,
+                                                            config: config).events)
+        }
+        runner.check("a relaxed hand never clicks", restingEvents.isEmpty,
+                     "\(restingEvents.count) events")
+        runner.check("the detector learns the resting gap", resting.learningBaseline > 0.08,
+                     String(format: "baseline %.3f", resting.learningBaseline))
+
+        // Three deliberate taps must give exactly three clicks and three releases.
+        let tapping = GestureRecognizer()
+        var tapEvents: [PointerEvent] = []
+        var tapTime = 0.0
+        for _ in 0..<3 {
+            for contact in [0.115, 0.115, 0.04, 0.04, 0.04, 0.115, 0.115, 0.115, 0.115] {
+                tapTime += 1.0 / 60.0
+                tapEvents.append(contentsOf: tapping.update(thumbContact: contact,
+                                                            pinchIndex: 0.55, pinchMiddle: 1.2,
+                                                            fistRatio: 0.2, time: tapTime,
+                                                            config: config).events)
+            }
+        }
+        let downs = tapEvents.filter { if case .leftDown = $0 { return true }; return false }.count
+        let ups = tapEvents.filter { $0 == .leftUp }.count
+        runner.check("three taps give three clicks", downs == 3 && ups == 3,
+                     "\(downs) down, \(ups) up")
+
+        // The trainer must place thresholds between this user's rest and tap.
+        var contacts: [Double] = []
+        for _ in 0..<80 { contacts.append(0.24 + (rng.nextDouble() - 0.5) * 0.02) }
+        for _ in 0..<20 { contacts.append(0.05 + (rng.nextDouble() - 0.5) * 0.02) }
+        if let suggestion = TapTrainer.suggestion(from: contacts) {
+            runner.check("tap trainer places thresholds between rest and tap",
+                         suggestion.onLevel > 0.05
+                            && suggestion.onLevel < suggestion.resting
+                            && suggestion.offLevel > suggestion.onLevel,
+                         String(format: "on %.3f · off %.3f · rest %.3f", suggestion.onLevel,
+                                suggestion.offLevel, suggestion.resting))
+        } else {
+            runner.check("tap trainer places thresholds between rest and tap", false, "nil")
+        }
+        runner.check("tap trainer refuses a hand that never tapped",
+                     TapTrainer.suggestion(from: Array(repeating: 0.2, count: 120)) == nil, "")
+    }
+
+    // MARK: Finger flow
+
+    private static func fingerFlow(_ runner: inout SelfTestRunner) {
+        let width = 640
+        let height = 480
+        let aspect = Double(width) / Double(height)
+
+        func frame(shift: (x: Double, y: Double)) -> CVPixelBuffer? {
+            var created: CVPixelBuffer?
+            let attributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:]]
+            guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                      kCVPixelFormatType_32BGRA,
+                                      attributes as CFDictionary, &created) == kCVReturnSuccess,
+                  let buffer = created else { return nil }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+            let pixels = base.assumingMemoryBound(to: UInt8.self)
+            let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let sx = Double(x) - shift.x
+                    let sy = Double(y) - shift.y
+                    let value = 128 + 55 * sin(sx * 0.40) * cos(sy * 0.31)
+                        + 30 * sin(sx * 1.30 + sy * 0.70)
+                    let clamped = UInt8(min(max(value, 0), 255))
+                    let offset = y * rowBytes + x * 4
+                    pixels[offset] = clamped
+                    pixels[offset + 1] = clamped
+                    pixels[offset + 2] = clamped
+                    pixels[offset + 3] = 255
+                }
+            }
+            return buffer
+        }
+
+        func normalized(_ x: Double, _ y: Double) -> Vec2 {
+            Vec2(x / Double(width) * aspect, 1 - y / Double(height))
+        }
+
+        let tracker = FingerFlow()
+        let startPixel = (x: 320.0, y: 240.0)
+        guard let seed = frame(shift: (0, 0)) else {
+            runner.check("flow tracker seeds on the first frame", false, "no buffer")
+            return
+        }
+        _ = tracker.refine(anchor: normalized(startPixel.x, startPixel.y), buffer: seed, time: 0)
+        runner.check("flow tracker seeds on the first frame", tracker.isLocked, "")
+
+        // The finger moves 6.4 px right and 3.2 px up between frames: a deliberately fractional
+        // shift, which is the whole point of sub-pixel matching.
+        let shift = (x: 6.4, y: -3.2)
+        guard let moved = frame(shift: shift) else { return }
+        let truth = normalized(startPixel.x + shift.x, startPixel.y + shift.y)
+        guard let refined = tracker.refine(anchor: truth, buffer: moved, time: 1.0 / 60.0) else {
+            runner.check("flow recovers sub-pixel motion", false, "nil")
+            return
+        }
+        let errorX = abs(refined.x - truth.x) / aspect * Double(width)
+        let errorY = abs(refined.y - truth.y) * Double(height)
+        runner.check("flow recovers sub-pixel motion", max(errorX, errorY) < 1.0,
+                     String(format: "%.2f px, %.2f px", errorX, errorY))
+
+        // A landmark that jumps without the image moving must not drag the pointer with it.
+        let jumped = normalized(startPixel.x + 90, startPixel.y)
+        let rescued = tracker.refine(anchor: jumped, buffer: moved, time: 2.0 / 60.0)
+        let drift = rescued.map { $0.distance(to: jumped) } ?? -1
+        runner.check("flow refuses to follow a landmark jump",
+                     rescued == nil || drift < 0.02,
+                     String(format: "drift %.4f from landmark", drift))
     }
 
     // MARK: End to end

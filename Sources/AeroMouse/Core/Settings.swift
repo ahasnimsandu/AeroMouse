@@ -15,6 +15,7 @@ struct AppSettings: Codable {
     var lowLightEnhancement: Bool = true
     var adaptiveFrameRate: Bool = true
     var preferHighResolution: Bool = true
+    var fingerFlowEnabled: Bool = true
 }
 
 // MARK: - Persistence

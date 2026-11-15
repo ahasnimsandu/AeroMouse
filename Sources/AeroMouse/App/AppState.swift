@@ -51,6 +51,15 @@ final class AppState: ObservableObject {
             guard let self else { return }
             self.snapshot = snapshot
             self.isTracking = snapshot.isRunning
+            if let suggestion = snapshot.tapSuggestion {
+                self.settings.gestures.tapOn = suggestion.onLevel
+                self.settings.gestures.tapOff = suggestion.offLevel
+                self.settings.gestures.tapBaseline = suggestion.baseline
+                self.settings.gestures.tapAdaptiveThreshold = true
+                self.statusText = String(format: "Tap tuned: closed below %.3f, released above %.3f",
+                                         suggestion.onLevel, suggestion.offLevel)
+                self.engine.clearTapSuggestion()
+            }
             if snapshot.isRunning {
                 self.jitterHistory.append(snapshot.jitter)
                 if self.jitterHistory.count > 150 {
@@ -125,8 +134,28 @@ final class AppState: ObservableObject {
     }
 
     func updateScreen() {
-        guard let rect = AppState.cgRect(for: NSScreen.main ?? NSScreen.screens.first) else { return }
+        // The pointer has to be mapped onto the display it is actually on. Using the main screen
+        // put every movement on the wrong monitor for anyone with more than one.
+        let location = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let rect = AppState.cgRect(for: screen) else { return }
         engine.setScreen(rect)
+    }
+
+    // MARK: Tap training
+
+    func beginTapTraining() {
+        refreshPermissions()
+        if !isTracking { startTracking() }
+        engine.beginTapTraining()
+        statusText = "Relax your hand, then tap three times"
+    }
+
+    func cancelTapTraining() {
+        engine.cancelTapTraining()
+        statusText = "Tap training cancelled"
     }
 
     static func cgRect(for screen: NSScreen?) -> RectD? {
