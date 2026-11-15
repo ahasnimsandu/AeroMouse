@@ -22,6 +22,10 @@ struct AeroMouseApp: App {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "control")
             }
+            Button("Welcome guide…") {
+                NSApp.activate(ignoringOtherApps: true)
+                IntroWindowController.shared.show(app: app)
+            }
             Divider()
             Button("Quit AeroMouse") {
                 NSApp.terminate(nil)

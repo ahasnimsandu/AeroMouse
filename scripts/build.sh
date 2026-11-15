@@ -17,6 +17,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -module-name AeroMouse -o "$BIN" $(find Sources/AeroMouse -name '*.swift' | sort)
 
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+if [ -f Resources/AppIcon.icns ]; then cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"; fi
 
 echo "Signing (ad-hoc)…"
 codesign --force --sign - "$APP"

@@ -81,6 +81,8 @@ final class TrackingEngine {
     private var gazeActive = false
     private var scrollAccumulator = ScrollAccumulator()
     private var lastScrollY: Double?
+    private var handLostTime: Double = 0
+    private var lastOutputVelocity: Vec2 = .zero
 
     // Tap trainer. The camera queue owns the samples; the flag and result are exchanged under the lock.
     private var tapTrainingActive = false
@@ -272,13 +274,26 @@ final class TrackingEngine {
             gestures.reset()
             clickLock.reset()
             landmarkSmoother.reset()
-            // A patch carried over from a hand that left the frame would latch onto whatever is at
-            // that position next time; the tracker has to start clean.
             fingerFlow.reset()
             gazeAssist = .zero
+            if handLostTime == 0 { handLostTime = time }
+            let elapsed = time - handLostTime
+            if elapsed < 0.35, lastOutputVelocity.length > 5 {
+                let dt = lastFrameTime == 0 ? 1.0 / 60.0 : max(min(time - lastFrameTime, 0.2), 1.0 / 1000.0)
+                lastFrameTime = time
+                let decay = exp(-elapsed / 0.18)
+                let v = lastOutputVelocity * decay
+                let candidate = cursor.position + v * dt
+                cursor.move(to: candidate.clamped(to: screen), dragging: false)
+                publish(hand: nil, gesture: nil, output: nil, samples: samplesSoFar, enhancing: enhance)
+                return
+            }
+            handLostTime = 0
+            lastOutputVelocity = .zero
             publish(hand: nil, gesture: nil, output: nil, samples: samplesSoFar, enhancing: enhance)
             return
         }
+        handLostTime = 0
 
         // 3. Per-landmark filtering, then re-derive every measurement from the smoothed joints.
         let smoothed = landmarkSmoother.smooth(rawHand.points,
@@ -337,6 +352,25 @@ final class TrackingEngine {
            let refined = fingerFlow.refine(anchor: anchor, buffer: analysedBuffer, time: time) {
             anchor = refined
         }
+
+        // Edge reach: when the hand sits at the edge of the camera frame, nudge the anchor outward
+        // so the pointer can still reach the corresponding screen edge instead of stopping early.
+        let reachAspect = max(vision.lastAspect, 0.1)
+        var reachAnchor = anchor
+        let nx = anchor.x / reachAspect
+        let ny = anchor.y
+        let margin = 0.12
+        if nx < margin {
+            reachAnchor.x = anchor.x - (margin - nx) * reachAspect * 0.4
+        } else if nx > 1 - margin {
+            reachAnchor.x = anchor.x + (nx - (1 - margin)) * reachAspect * 0.4
+        }
+        if ny < margin {
+            reachAnchor.y = anchor.y - (margin - ny) * 0.4
+        } else if ny > 1 - margin {
+            reachAnchor.y = anchor.y + (ny - (1 - margin)) * 0.4
+        }
+        anchor = reachAnchor
 
         // Before calibration there is no model, so fall back to a plain mirrored, aspect-corrected
         // mapping. It is rough, but it tracks the hand instead of pinning the pointer to a corner,
@@ -418,6 +452,7 @@ final class TrackingEngine {
 
         jitterMeter.record(output.point, time: time)
         lastSpeed = output.velocity.length
+        lastOutputVelocity = output.velocity
 
         // Calibration capture: a pinch is a precise sample; a settled hover is a cheap extra one.
         // Both are weighted by tracking quality, so a noisy dark frame cannot skew the fit.

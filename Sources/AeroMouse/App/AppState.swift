@@ -104,6 +104,13 @@ final class AppState: ObservableObject {
 
         refreshPermissions()
         updateScreen()
+
+        if !UserDefaults.standard.bool(forKey: "hasSeenIntro") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else { return }
+                IntroWindowController.shared.show(app: self)
+            }
+        }
     }
 
     // MARK: Permissions
@@ -176,23 +183,23 @@ final class AppState: ObservableObject {
         var smoothing = settings.smoothing
         switch preset {
         case .precise:
-            smoothing.minCutoff = 1.3
-            smoothing.beta = 0.020
-            smoothing.predictionMs = 10
-            smoothing.precisionGain = 0.50
-            smoothing.deadband = 1.4
+            smoothing.minCutoff = 1.2
+            smoothing.beta = 0.018
+            smoothing.predictionMs = 12
+            smoothing.precisionGain = 0.48
+            smoothing.deadband = 1.3
         case .balanced:
-            smoothing.minCutoff = 1.8
-            smoothing.beta = 0.030
-            smoothing.predictionMs = 14
-            smoothing.precisionGain = 0.62
-            smoothing.deadband = 1.1
+            smoothing.minCutoff = 1.6
+            smoothing.beta = 0.028
+            smoothing.predictionMs = 16
+            smoothing.precisionGain = 0.65
+            smoothing.deadband = 0.9
         case .snappy:
-            smoothing.minCutoff = 3.0
-            smoothing.beta = 0.060
-            smoothing.predictionMs = 18
-            smoothing.precisionGain = 0.78
-            smoothing.deadband = 0.8
+            smoothing.minCutoff = 2.8
+            smoothing.beta = 0.055
+            smoothing.predictionMs = 20
+            smoothing.precisionGain = 0.80
+            smoothing.deadband = 0.7
         }
         settings.smoothing = smoothing
         statusText = "Feel set to \(preset.title)"
