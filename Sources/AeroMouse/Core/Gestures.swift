@@ -17,6 +17,14 @@ struct GestureConfig: Codable {
     var pinchClickEnabled: Bool = false
     var pinchOn: Double = 0.42        // thumb-index distance / hand scale to close
     var pinchOff: Double = 0.62       // ...and to open again (hysteresis gap kills flicker)
+
+    /// Scroll: index and middle fingers held together, thumb clear, hand moved up or down.
+    var scrollEnabled: Bool = true
+    var scrollMinGap: Double = 0.40   // gap that enters scroll mode
+    var scrollMaxGap: Double = 0.55   // gap that leaves it again
+    var scrollThumbClear: Double = 0.60  // thumb must be this far from the index, or it is a tap
+    var scrollSpeed: Double = 2.4     // pointer pixels of hand travel per wheel step
+    var scrollDeadzone: Double = 0.6  // px of hand travel ignored, to kill tremor
     var middlePinchOn: Double = 0.46
     var middlePinchOff: Double = 0.66
     var minDownFrames: Int = 2        // debounce: frames below threshold before a click registers
@@ -43,6 +51,7 @@ struct GestureOutput {
     var events: [PointerEvent] = []
     var dragging: Bool = false
     var pinching: Bool = false
+    var scrolling: Bool = false
     var frozen: Bool = false
     /// Live detector state, so the panel can show exactly what the recogniser is comparing against.
     var tapOnLevel: Double = 0
@@ -70,6 +79,7 @@ final class GestureRecognizer {
     private var contactBaseline: Double = 0
     private var baselineFrames = 0
     private var lastUpdateTime: Double = -1
+    private var scrolling = false
 
     func reset() {
         leftDown = false
@@ -84,6 +94,7 @@ final class GestureRecognizer {
         contactBaseline = 0
         baselineFrames = 0
         lastUpdateTime = -1
+        scrolling = false
     }
 
     /// Resting gap the detector is currently assuming, for the panel and the self-test.
@@ -94,6 +105,7 @@ final class GestureRecognizer {
     func update(thumbContact: Double,
                 pinchIndex: Double,
                 pinchMiddle: Double,
+                indexMiddleGap: Double,
                 fistRatio: Double,
                 time: Double,
                 config: GestureConfig) -> GestureOutput {
@@ -243,8 +255,20 @@ final class GestureRecognizer {
             }
         }
 
+        // ---- Scroll: index and middle fingers held together, thumb out of the way ----
+        let gapValid = indexMiddleGap.isFinite && indexMiddleGap >= 0
+        if config.scrollEnabled, gapValid {
+            let limit = scrolling ? config.scrollMaxGap : config.scrollMinGap
+            scrolling = indexMiddleGap < limit
+                && pinchIndex > config.scrollThumbClear
+                && !leftDown && !rightDown
+        } else {
+            scrolling = false
+        }
+
         output.dragging = leftDown && config.dragEnabled
         output.pinching = leftDown
+        output.scrolling = scrolling
         output.frozen = frozen
         output.tapOnLevel = onLevel
         output.tapOffLevel = offLevel

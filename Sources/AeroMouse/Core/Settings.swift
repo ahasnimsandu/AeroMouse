@@ -16,6 +16,8 @@ struct AppSettings: Codable {
     var adaptiveFrameRate: Bool = true
     var preferHighResolution: Bool = true
     var fingerFlowEnabled: Bool = true
+    /// Set once the tap trainer has placed thresholds from this user's own hand.
+    var tapTuned: Bool = false
 }
 
 // MARK: - Persistence

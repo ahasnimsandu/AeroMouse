@@ -38,6 +38,7 @@ struct TrackingSnapshot {
     var tapOffLevel: Double = 0
     var contactBaseline: Double = 0
     var tapClosed = false
+    var scrolling = false
     var flowLocked = false
     var tapTrainingActive = false
     var tapTrainingProgress: Double = 0
@@ -78,6 +79,8 @@ final class TrackingEngine {
     private var lastHoverSample: Double = -10
     private var lastSpeed: Double = 0
     private var gazeActive = false
+    private var scrollAccumulator = ScrollAccumulator()
+    private var lastScrollY: Double?
 
     // Tap trainer. The camera queue owns the samples; the flag and result are exchanged under the lock.
     private var tapTrainingActive = false
@@ -131,6 +134,8 @@ final class TrackingEngine {
         pointer.reset(at: nil)
         clickLock.reset()
         jitterMeter.reset()
+        scrollAccumulator.reset()
+        lastScrollY = nil
         gazeFilter.reset()
         landmarkSmoother.reset()
         enhancer.reset()
@@ -316,6 +321,7 @@ final class TrackingEngine {
         let gesture = gestures.update(thumbContact: hand.thumbContact,
                                       pinchIndex: hand.pinchIndex,
                                       pinchMiddle: hand.pinchMiddle,
+                                      indexMiddleGap: hand.indexMiddleGap,
                                       fistRatio: hand.fistRatio,
                                       time: time,
                                       config: gestureConfig)
@@ -365,6 +371,21 @@ final class TrackingEngine {
         normalized = normalized + gazeAssist
 
         let mapped = screen.denormalized(normalized)
+
+        // Scroll gesture: two fingers held together and moved vertically. Wheel events replace
+        // pointer motion, so the cursor stays exactly where it was while you scroll.
+        if gesture.scrolling {
+            let y = mapped.y
+            if let previous = lastScrollY, abs(y - previous) > config.gestures.scrollDeadzone {
+                let ticks = scrollAccumulator.ticks(forPixels: (y - previous) * config.gestures.scrollSpeed)
+                if ticks != 0 { cursor.scroll(lines: ticks) }
+            }
+            lastScrollY = y
+            publish(hand: hand, gesture: gesture, output: nil, samples: samplesSoFar, enhancing: enhance)
+            return
+        }
+        lastScrollY = nil
+        scrollAccumulator.reset()
 
         // Click lock: absorb the few centimetres a pinch drags the fingertip.
         if gesture.events.contains(where: { if case .leftDown = $0 { return true }; return false }) {
@@ -474,6 +495,7 @@ final class TrackingEngine {
             snapshot.tapOffLevel = gesture.tapOffLevel
             snapshot.contactBaseline = gesture.contactBaseline
             snapshot.tapClosed = gesture.tapClosed
+            snapshot.scrolling = gesture.scrolling
         }
         snapshot.hasFace = lastGaze != nil
         snapshot.gaze = gazeAssist.length > 0.0005 ? gazeAssist : nil

@@ -11,6 +11,31 @@ enum CalibrationPhase: Equatable {
     case failed(String)
 }
 
+/// One click sets the whole pointer feel: smoothing, prediction, precision gain and deadband move
+/// together, because tuning them independently is what makes a pointer feel wrong in ways that are
+/// hard to describe.
+enum SmoothingPreset: String, CaseIterable, Identifiable {
+    case precise, balanced, snappy
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .precise: return "Precise"
+        case .balanced: return "Balanced"
+        case .snappy: return "Snappy"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .precise: return "Heavy smoothing, small movements stay slow. Best for detail work."
+        case .balanced: return "The default balance of smooth and responsive."
+        case .snappy: return "Light smoothing with more prediction. Best for big screens."
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var settings: AppSettings {
@@ -56,6 +81,7 @@ final class AppState: ObservableObject {
                 self.settings.gestures.tapOff = suggestion.offLevel
                 self.settings.gestures.tapBaseline = suggestion.baseline
                 self.settings.gestures.tapAdaptiveThreshold = true
+                self.settings.tapTuned = true
                 self.statusText = String(format: "Tap tuned: closed below %.3f, released above %.3f",
                                          suggestion.onLevel, suggestion.offLevel)
                 self.engine.clearTapSuggestion()
@@ -142,6 +168,34 @@ final class AppState: ObservableObject {
             ?? NSScreen.screens.first
         guard let rect = AppState.cgRect(for: screen) else { return }
         engine.setScreen(rect)
+    }
+
+    // MARK: Feel
+
+    func apply(preset: SmoothingPreset) {
+        var smoothing = settings.smoothing
+        switch preset {
+        case .precise:
+            smoothing.minCutoff = 1.3
+            smoothing.beta = 0.020
+            smoothing.predictionMs = 10
+            smoothing.precisionGain = 0.50
+            smoothing.deadband = 1.4
+        case .balanced:
+            smoothing.minCutoff = 1.8
+            smoothing.beta = 0.030
+            smoothing.predictionMs = 14
+            smoothing.precisionGain = 0.62
+            smoothing.deadband = 1.1
+        case .snappy:
+            smoothing.minCutoff = 3.0
+            smoothing.beta = 0.060
+            smoothing.predictionMs = 18
+            smoothing.precisionGain = 0.78
+            smoothing.deadband = 0.8
+        }
+        settings.smoothing = smoothing
+        statusText = "Feel set to \(preset.title)"
     }
 
     // MARK: Tap training

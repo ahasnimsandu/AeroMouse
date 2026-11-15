@@ -54,6 +54,15 @@ final class CursorController {
     func rightDown() { post(.rightMouseDown, button: .right, clickState: 1) }
     func rightUp() { post(.rightMouseUp, button: .right, clickState: 1) }
 
+    /// Wheel events, in lines. Positive lines scroll the content up, matching macOS.
+    func scroll(lines: Int) {
+        guard lines != 0,
+              let event = CGEvent(scrollWheelEvent2Source: source, units: .line,
+                                  wheelCount: 1, wheel1: Int32(clamping: lines),
+                                  wheel2: 0, wheel3: 0) else { return }
+        event.post(tap: .cghidEventTap)
+    }
+
     func releaseButtons() {
         if isLeftButtonDown { leftUp() }
     }

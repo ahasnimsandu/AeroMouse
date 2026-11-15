@@ -16,6 +16,8 @@ struct HandFrame {
     var pose = PointerPose()
     var pinchIndex: Double = .infinity
     var pinchMiddle: Double = .infinity
+    /// Index-to-middle fingertip gap: held small, the hand is in the two-finger scroll pose.
+    var indexMiddleGap: Double = .infinity
     /// Thumb pad to the *edge* of the index finger, in hand units. This is the Apple Watch tap
     /// geometry: the two fingers meet along their sides, anywhere from the first knuckle to the tip.
     var thumbContact: Double = .infinity
@@ -68,6 +70,7 @@ struct HandFrame {
         frame.thumbContact = Vec2.distance(thumbTip, toSegment: indexPIP, indexTip) / handScale
         frame.pinchIndex = thumbTip.distance(to: indexTip) / handScale
         frame.pinchMiddle = point(.middleTip).map { thumbTip.distance(to: $0) / handScale } ?? .infinity
+        frame.indexMiddleGap = point(.middleTip).map { indexTip.distance(to: $0) / handScale } ?? .infinity
 
         // Fist detection: how far each visible fingertip has curled back to its knuckle.
         let fingers: [(VNHumanHandPoseObservation.JointName, VNHumanHandPoseObservation.JointName)] = [

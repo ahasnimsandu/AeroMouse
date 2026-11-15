@@ -55,8 +55,13 @@ build/AeroMouse.app/Contents/MacOS/AeroMouse --self-test
 | Keep the contact and move | Drag |
 | Two quick taps | Double click |
 | Thumb + middle pinch | Right click |
+| Index + middle held together, hand moved up/down | Scroll |
 | Closed fist | Freeze the pointer |
 | Open hand | Move the pointer |
+
+Scroll is a separate pose rather than a button: with the thumb clear and the two fingers together the
+hand sends wheel events, so the pointer stays exactly where it is instead of sliding down the page
+while you scroll.
 
 The click gesture is the Apple Watch double-tap geometry rather than a pinch: the gap is measured
 from the thumb tip to the *edge* of the index finger (the segment from the first to the last
@@ -148,6 +153,13 @@ Every failure mode falls back to the landmark: weak texture, a failed or border-
 dark frame, an unrecognised pixel format, or a disagreement large enough to be a jump rather than
 motion. On a synthetic frame shifted by a deliberately fractional 6.4 px, the recovered motion is
 accurate to **0.05 px**. Toggle it off under *Low light & GPU* if you ever want the plain landmark.
+
+## Feel presets
+
+The panel has three one-click presets — **Precise**, **Balanced** and **Snappy** — that move
+smoothing, prediction, precision gain and deadband together. Tuning those four independently is what
+usually makes a pointer feel subtly wrong; a preset keeps them consistent and the sliders stay
+available underneath for anyone who wants to go further.
 
 ## Smoothing
 

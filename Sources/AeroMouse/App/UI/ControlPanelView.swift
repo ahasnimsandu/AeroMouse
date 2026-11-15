@@ -99,6 +99,7 @@ struct ControlPanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if !isSetUp { setupCard }
                 HStack(alignment: .top, spacing: 16) {
                     VStack(spacing: 16) {
                         trackerCard
@@ -143,6 +144,72 @@ struct ControlPanelView: View {
             }
             .keyboardShortcut(.space, modifiers: [.command])
             .buttonStyle(.borderedProminent)
+            Button("Calibrate…") { app.startCalibration(plan: .standard()) }
+                .buttonStyle(.bordered)
+            Menu {
+                Button("Quick calibration…") { app.startCalibration(plan: .quick()) }
+                Button("Precise calibration…") { app.startCalibration(plan: .precise()) }
+                Divider()
+                Button("Learn my tap…") { app.beginTapTraining() }
+                Button("Run self-test") { app.runSelfTest() }
+                Button("Open model folder") { app.openModelFolder() }
+                Divider()
+                Button("Delete calibration") { app.resetModel() }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    // MARK: Setup
+
+    private var isSetUp: Bool {
+        app.cameraAuthorized && app.accessibilityTrusted
+            && app.model != nil && app.settings.tapTuned
+    }
+
+    private var setupCard: some View {
+        Card(title: "Get started",
+             subtitle: "Four steps and you are pointing with your hand. Ticks appear as you go.") {
+            setupRow(done: app.cameraAuthorized,
+                     title: "Allow camera access",
+                     detail: "AeroMouse has to see your hand.",
+                     actionTitle: "Allow",
+                     action: { app.requestCamera() })
+            setupRow(done: app.accessibilityTrusted,
+                     title: "Allow Accessibility",
+                     detail: "macOS only lets a trusted app move the pointer.",
+                     actionTitle: "Open Settings",
+                     action: { app.requestAccessibility() })
+            setupRow(done: app.model != nil,
+                     title: "Calibrate on your screen",
+                     detail: "Follow the dots and tap each one — about a minute.",
+                     actionTitle: "Calibrate",
+                     action: { app.startCalibration(plan: .standard()) })
+            setupRow(done: app.settings.tapTuned,
+                     title: "Teach it your tap",
+                     detail: "Relax your hand, then tap three times.",
+                     actionTitle: "Learn",
+                     action: { app.beginTapTraining() })
+        }
+    }
+
+    private func setupRow(done: Bool, title: String, detail: String,
+                          actionTitle: String, action: @escaping () -> Void) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(done ? Color.green : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout.weight(done ? .regular : .medium))
+                Text(detail).font(.caption2).foregroundStyle(.tertiary)
+            }
+            Spacer()
+            if !done {
+                Button(actionTitle, action: action)
+                    .controlSize(.small)
+            }
         }
     }
 
@@ -207,6 +274,7 @@ struct ControlPanelView: View {
                 JitterSparkline(values: app.jitterHistory)
             }
             HStack(spacing: 6) {
+                if app.snapshot.scrolling { StatusPill(text: "Scrolling", active: true) }
                 if app.snapshot.dragging { StatusPill(text: "Holding", active: true) }
                 if app.snapshot.frozen { StatusPill(text: "Frozen", active: false) }
                 if app.snapshot.hasFace { StatusPill(text: "Face", active: true) }
@@ -356,6 +424,14 @@ struct ControlPanelView: View {
 
     private var smoothingCard: some View {
         Card(title: "Smoothing", subtitle: "One Euro filter with velocity prediction. Lower cutoff = silkier; higher = snappier.") {
+            HStack(spacing: 8) {
+                ForEach(SmoothingPreset.allCases) { preset in
+                    Button(preset.title) { app.apply(preset: preset) }
+                        .controlSize(.small)
+                        .help(preset.detail)
+                }
+                Spacer()
+            }
             SliderRow(label: "Smoothing (min cutoff)", value: $app.settings.smoothing.minCutoff,
                       range: 0.4...6.0, format: "%.1f Hz",
                       hint: "Lower is smoother but adds lag. 1.5–2.5 feels best for most hands.")
@@ -427,6 +503,18 @@ struct ControlPanelView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.small)
+
+            Divider()
+            Toggle("Scroll with two fingers", isOn: $app.settings.gestures.scrollEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            Text("Hold your index and middle fingers together with the thumb away, then move your hand up or down. This sends wheel events instead of moving the pointer, so the cursor stays exactly where it is.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            SliderRow(label: "Scroll speed", value: $app.settings.gestures.scrollSpeed,
+                      range: 0.8...6.0, format: "%.1f×")
+                .disabled(!app.settings.gestures.scrollEnabled)
         }
     }
 

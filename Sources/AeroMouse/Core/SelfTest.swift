@@ -283,7 +283,7 @@ enum SelfTest {
         for contact in [0.40, 0.40, 0.06, 0.06, 0.06, 0.40, 0.40, 0.40] {
             time += 1.0 / 60.0
             tapEvents.append(contentsOf: tap.update(thumbContact: contact, pinchIndex: 0.95,
-                                                    pinchMiddle: 1.4, fistRatio: 0.1,
+                                                    pinchMiddle: 1.4, indexMiddleGap: 1.0, fistRatio: 0.1,
                                                     time: time, config: config).events)
         }
         let tapCounts = count(tapEvents)
@@ -299,7 +299,7 @@ enum SelfTest {
         for _ in 0..<120 {
             hoverTime += 1.0 / 60.0
             hoverEvents.append(contentsOf: hover.update(thumbContact: 0.30, pinchIndex: 0.30,
-                                                        pinchMiddle: 1.4, fistRatio: 0.1,
+                                                        pinchMiddle: 1.4, indexMiddleGap: 1.0, fistRatio: 0.1,
                                                         time: hoverTime, config: config).events)
         }
         runner.check("an open hand never clicks", hoverEvents.isEmpty,
@@ -314,7 +314,7 @@ enum SelfTest {
                 dt += 1.0 / 60.0
                 doubleTapEvents.append(contentsOf: doubleTap.update(thumbContact: contact,
                                                                     pinchIndex: 0.95,
-                                                                    pinchMiddle: 1.4, fistRatio: 0.1,
+                                                                    pinchMiddle: 1.4, indexMiddleGap: 1.0, fistRatio: 0.1,
                                                                     time: dt, config: config).events)
             }
         }
@@ -336,7 +336,7 @@ enum SelfTest {
         for value in approach {
             pt += 1.0 / 60.0
             pinchEvents.append(contentsOf: pinch.update(thumbContact: 0.40, pinchIndex: value,
-                                                        pinchMiddle: 1.4, fistRatio: 0.1,
+                                                        pinchMiddle: 1.4, indexMiddleGap: 1.0, fistRatio: 0.1,
                                                         time: pt, config: pinchConfig).events)
         }
         let pinchCounts = count(pinchEvents)
@@ -352,11 +352,25 @@ enum SelfTest {
             mt += 1.0 / 60.0
             fistEvents.append(contentsOf: fist.update(thumbContact: contact, pinchIndex: 0.95,
                                                       pinchMiddle: 1.4,
+                                                      indexMiddleGap: 1.0,
                                                       fistRatio: contact < 0.1 ? 0.1 : 0.95,
                                                       time: mt, config: config).events)
         }
         runner.check("fist releases a held click", fistEvents.contains(.leftUp),
                      "\(fistEvents.count) events")
+
+        // Scroll pose: index and middle together, thumb clear → wheel events, and no clicks.
+        let scroll = GestureRecognizer()
+        let scrollOut = scroll.update(thumbContact: 0.30, pinchIndex: 0.85, pinchMiddle: 1.2,
+                                      indexMiddleGap: 0.30, fistRatio: 0.15,
+                                      time: 0.1, config: config)
+        runner.check("two fingers together scroll instead of clicking",
+                     scrollOut.scrolling && scrollOut.events.isEmpty,
+                     "\(scrollOut.events.count) events")
+        let openOut = scroll.update(thumbContact: 0.30, pinchIndex: 0.85, pinchMiddle: 1.2,
+                                    indexMiddleGap: 1.10, fistRatio: 0.15,
+                                    time: 0.2, config: config)
+        runner.check("apart fingers leave scroll mode", !openOut.scrolling, "")
 
         // Contact geometry: the gap is measured to the finger's edge, not to its tip.
         let touching = Vec2.distance(Vec2(0, 0), toSegment: Vec2(-1, 0), Vec2(1, 0))
@@ -699,7 +713,7 @@ enum SelfTest {
             let noise = (rng.nextDouble() - 0.5) * 0.006
             restingEvents.append(contentsOf: resting.update(thumbContact: 0.115 + drift + noise,
                                                             pinchIndex: 0.55, pinchMiddle: 1.2,
-                                                            fistRatio: 0.2, time: time,
+                                                            indexMiddleGap: 1.0, fistRatio: 0.2, time: time,
                                                             config: config).events)
         }
         runner.check("a relaxed hand never clicks", restingEvents.isEmpty,
@@ -716,7 +730,7 @@ enum SelfTest {
                 tapTime += 1.0 / 60.0
                 tapEvents.append(contentsOf: tapping.update(thumbContact: contact,
                                                             pinchIndex: 0.55, pinchMiddle: 1.2,
-                                                            fistRatio: 0.2, time: tapTime,
+                                                            indexMiddleGap: 1.0, fistRatio: 0.2, time: tapTime,
                                                             config: config).events)
             }
         }
