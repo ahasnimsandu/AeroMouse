@@ -9,6 +9,7 @@ final class CursorController {
     private let source = CGEventSource(stateID: .hidSystemState)
     private(set) var position: Vec2 = .zero
     private(set) var isLeftButtonDown = false
+    private(set) var isRightButtonDown = false
     private var clickState = 1
 
     var isTrusted: Bool { AXIsProcessTrusted() }
@@ -51,8 +52,16 @@ final class CursorController {
         clickState = 1
     }
 
-    func rightDown() { post(.rightMouseDown, button: .right, clickState: 1) }
-    func rightUp() { post(.rightMouseUp, button: .right, clickState: 1) }
+    func rightDown() {
+        guard !isRightButtonDown else { return }
+        isRightButtonDown = true
+        post(.rightMouseDown, button: .right, clickState: 1)
+    }
+    func rightUp() {
+        guard isRightButtonDown else { return }
+        isRightButtonDown = false
+        post(.rightMouseUp, button: .right, clickState: 1)
+    }
 
     /// Wheel events, in lines. Positive lines scroll the content up, matching macOS.
     func scroll(lines: Int) {
@@ -65,6 +74,7 @@ final class CursorController {
 
     func releaseButtons() {
         if isLeftButtonDown { leftUp() }
+        if isRightButtonDown { rightUp() }
     }
 
     private func post(_ type: CGEventType, button: CGMouseButton, clickState: Int) {

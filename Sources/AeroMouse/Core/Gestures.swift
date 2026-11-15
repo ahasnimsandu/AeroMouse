@@ -25,8 +25,8 @@ struct GestureConfig: Codable {
     var scrollThumbClear: Double = 0.60  // thumb must be this far from the index, or it is a tap
     var scrollSpeed: Double = 2.4     // pointer pixels of hand travel per wheel step
     var scrollDeadzone: Double = 0.6  // px of hand travel ignored, to kill tremor
-    var middlePinchOn: Double = 0.46
-    var middlePinchOff: Double = 0.66
+    var middlePinchOn: Double = 0.40
+    var middlePinchOff: Double = 0.60
     var minDownFrames: Int = 2        // debounce: frames below threshold before a click registers
     var minUpFrames: Int = 2
     var doubleClickWindow: Double = 0.34
@@ -227,7 +227,16 @@ final class GestureRecognizer {
 
         // ---- Right pinch (thumb + middle), blocked while a left press is active ----
         let middleValid = pinchMiddle.isFinite && pinchMiddle >= 0
-        if config.rightClickEnabled, middleValid {
+        // A right click is a deliberate middle-finger pinch: never fire it while the thumb is
+        // anywhere near the index finger, or an ordinary click gets misread as a right click.
+        let leftAttempting = tapAvailable && thumbContact.isFinite && thumbContact < offLevel
+        if leftAttempting, rightDown {
+            rightDown = false
+            rightDownFrames = 0
+            rightUpFrames = 0
+            output.events.append(.rightUp)
+        }
+        if config.rightClickEnabled, middleValid, !leftAttempting {
             if !rightDown {
                 if pinchMiddle < config.middlePinchOn, !leftDown {
                     rightDownFrames += 1

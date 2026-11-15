@@ -270,7 +270,7 @@ final class TrackingEngine {
         }
 
         guard let rawHand else {
-            if cursor.isLeftButtonDown { cursor.leftUp() }
+            cursor.releaseButtons()
             gestures.reset()
             clickLock.reset()
             landmarkSmoother.reset()
