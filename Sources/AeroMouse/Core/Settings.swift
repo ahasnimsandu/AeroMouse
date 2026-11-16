@@ -69,8 +69,9 @@ enum ModelStore {
         settings.gestures.scrollEnabled = false
         settings.gestures.freezeEnabled = false
         settings.gestures.doubleClickEnabled = false
-        settings.gestures.pinchClickEnabled = true
-        settings.gestures.rightClickEnabled = true
+        settings.gestures.pinchClickEnabled = false
+        settings.gestures.rightClickEnabled = false
+        settings.gestures.dragEnabled = false
         settings.eyeAssistEnabled = false
         return settings
     }

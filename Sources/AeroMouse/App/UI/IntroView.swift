@@ -17,12 +17,12 @@ struct IntroView: View {
         IntroPage(icon: "hand.raised.fill",
                   title: "Point with your hand",
                   subtitle: "AeroMouse turns your webcam into a precise mouse. No extra hardware, no dongle — just your hand in front of the camera."),
-        IntroPage(icon: "hand.pinch.fill",
-                  title: "Pinch to click",
-                  subtitle: "Bring your thumb and index finger together. That is a left click. Separate them to release."),
         IntroPage(icon: "hand.point.up.left.fill",
-                  title: "Right click",
-                  subtitle: "Bring your thumb and middle finger together. That is a right click. Index finger stays clear."),
+                  title: "Just move",
+                  subtitle: "Move your right hand to move the pointer. There are no hand gestures at all — no pinching, no tapping, no right-clicking."),
+        IntroPage(icon: "eye.fill",
+                  title: "Blink to click",
+                  subtitle: "Close both eyes for about a quarter of a second, then open them. That is one left click, wherever the pointer is."),
         IntroPage(icon: "checkmark.circle.fill",
                   title: "You're ready",
                   subtitle: "Allow camera and Accessibility access, then calibrate on your screen. Move your hand to move the pointer. You can reopen this guide from the menu bar."),
@@ -126,7 +126,7 @@ struct IntroView: View {
     }
 
     private func finish() {
-        UserDefaults.standard.set(true, forKey: "hasSeenIntro_v2")
+        UserDefaults.standard.set(true, forKey: "hasSeenIntro_v3")
         onDismiss()
     }
 }

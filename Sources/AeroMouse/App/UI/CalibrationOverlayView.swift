@@ -49,7 +49,7 @@ struct CalibrationOverlayView: View {
             VStack(spacing: 10) {
                 Text("Calibration")
                     .font(.title2.weight(.semibold))
-                Text("Move the pointer with your hand, then pinch thumb + index on the dot.\nVary your distance and hand angle slightly — the fit uses that to learn depth and roll.")
+                Text("Move the pointer with your hand, then blink both eyes on the dot.\nVary your distance and hand angle slightly — the fit uses that to learn depth and roll.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -67,10 +67,10 @@ struct CalibrationOverlayView: View {
                     Text("Dot \(min(app.calibrationIndex + 1, app.calibrationTargets.count)) of \(app.calibrationTargets.count)")
                     Text("•")
                     Text("\(app.calibrationSampleCount) samples")
-                    if let pinch = Optional(app.snapshot.pinchIndex), pinch.isFinite {
+                    if app.snapshot.hasFace {
                         Text("•")
-                        Text(String(format: "pinch %.2f", pinch))
-                            .foregroundStyle(pinch < app.settings.gestures.pinchOn ? .green : .secondary)
+                        Text(String(format: "eyes %.0f%%", app.snapshot.gazeOpenness * 100))
+                            .foregroundStyle(app.snapshot.gazeOpenness > 0.30 ? .green : .orange)
                     }
                 }
                 .font(.callout.monospacedDigit())

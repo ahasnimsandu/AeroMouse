@@ -84,6 +84,14 @@ final class TrackingEngine {
     private var handLostTime: Double = 0
     private var lastOutputVelocity: Vec2 = .zero
 
+    // Blink click. A deliberate blink is both eyes closed for ~0.2 s; natural blinks are shorter
+    // and are ignored by the duration window and the cooldown.
+    private var blinkDetector = BlinkDetector()
+    private var lastFaceTime: Double = 0
+    private var blinkPending = false
+    private var lastOpenness: Double = 1
+    private var faceVisible = false
+
     // Tap trainer. The camera queue owns the samples; the flag and result are exchanged under the lock.
     private var tapTrainingActive = false
     private var tapTrainingStartedAt: Double = 0
@@ -265,8 +273,16 @@ final class TrackingEngine {
         let elapsed = (CACurrentMediaTime() - started) * 1000
         visionMilliseconds = visionMilliseconds == 0 ? elapsed : visionMilliseconds * 0.85 + elapsed * 0.15
 
-        if let gaze = faceFrame?.gaze {
-            lastGaze = gaze
+        if let face = faceFrame {
+            lastFaceTime = time
+            lastOpenness = face.openness
+            faceVisible = true
+            if let gaze = face.gaze { lastGaze = gaze }
+            updateBlink(openness: face.openness, time: time, calibrating: isCalibrating)
+        } else if lastFaceTime > 0, time - lastFaceTime > 1.2 {
+            // Face lost: do not let a stale half-closed state turn into a click when it returns.
+            blinkDetector.reset()
+            faceVisible = false
         }
 
         guard let rawHand else {
@@ -410,9 +426,14 @@ final class TrackingEngine {
         clickLock.decay(dt: dt)
         let compensated = clickLock.apply(mapped)
 
-        // Poor tracking quality widens the deadband instead of letting noise through.
+        // Quality-adaptive smoothing: a noisy dark frame gets a lower cutoff (silkier) and a wider
+        // deadband, while a clean frame stays responsive. Prediction is reduced when the signal is
+        // poor, because extrapolating noise is what makes a pointer overshoot in low light.
         var pipelineConfig = config.smoothing
-        pipelineConfig.deadband *= (1 + (1 - quality) * 0.9)
+        let lowQuality = min(max(1 - quality, 0), 1)
+        pipelineConfig.minCutoff *= max(0.55, 1 - 0.35 * lowQuality)
+        pipelineConfig.predictionMs *= max(0.45, 1 - 0.35 * lowQuality)
+        pipelineConfig.deadband *= (1 + 1.2 * lowQuality)
 
         guard let output = pointer.process(modelPoint: compensated,
                                            time: time,
@@ -436,12 +457,12 @@ final class TrackingEngine {
         lastSpeed = output.velocity.length
         lastOutputVelocity = output.velocity
 
-        // Calibration capture: a pinch is a precise sample; a settled hover is a cheap extra one.
+        // Calibration capture: a blink is a precise sample; a settled hover is a cheap extra one.
         // Both are weighted by tracking quality, so a noisy dark frame cannot skew the fit.
         if isCalibrating, let targetPoint = target {
             let qualityWeight = 0.5 + 0.5 * quality
-            let pinchDown = gesture.events.contains { if case .leftDown = $0 { return true }; return false }
-            if pinchDown {
+            if blinkPending {
+                blinkPending = false
                 deliver(CalibrationSample(source: anchor, target: targetPoint, weight: 2.0 * qualityWeight,
                                           group: 0, pose: hand.pose, gaze: lastGaze))
                 lastHoverSample = time
@@ -456,7 +477,26 @@ final class TrackingEngine {
             }
         }
 
+        // A blink click fires at the pointer's current position, independent of the hand.
+        if blinkPending {
+            blinkPending = false
+            cursor.leftDown(clickState: 1)
+            cursor.leftUp()
+        }
+
         publish(hand: hand, gesture: gesture, output: output, samples: samplesSoFar, enhancing: enhance)
+    }
+
+    /// Both eyes must close together for long enough to be deliberate. A natural blink is shorter
+    /// than the lower bound, and the cooldown stops a long blink from firing twice.
+    private func updateBlink(openness: Double, time: Double, calibrating: Bool) {
+        guard blinkDetector.update(openness: openness, time: time) else { return }
+        if calibrating {
+            blinkPending = true
+        } else {
+            cursor.leftDown(clickState: 1)
+            cursor.leftUp()
+        }
     }
 
     private func deliver(_ sample: CalibrationSample) {
@@ -485,7 +525,7 @@ final class TrackingEngine {
         snapshot.cameraWidth = capture.activeWidth
         snapshot.cameraHeight = capture.activeHeight
         snapshot.gazeActive = gazeActive
-        snapshot.gazeOpenness = lastGaze?.openness ?? 0
+        snapshot.gazeOpenness = lastOpenness
         snapshot.flowLocked = fingerFlow.isLocked
         stateLock.lock()
         snapshot.tapTrainingActive = tapTrainingActive
@@ -514,7 +554,7 @@ final class TrackingEngine {
             snapshot.tapClosed = gesture.tapClosed
             snapshot.scrolling = gesture.scrolling
         }
-        snapshot.hasFace = lastGaze != nil
+        snapshot.hasFace = faceVisible
         snapshot.gaze = gazeAssist.length > 0.0005 ? gazeAssist : nil
 
         stateLock.lock()

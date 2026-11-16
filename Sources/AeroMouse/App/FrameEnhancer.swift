@@ -19,13 +19,13 @@ enum LowLightPolicy {
     /// and a lower frame rate so the camera integrates light for longer — the single biggest win in
     /// low light, because it reduces sensor noise at the source.
     static func decision(forLuma luma: Double) -> LowLightDecision {
-        if luma >= 0.40 {
+        if luma >= 0.50 {
             return LowLightDecision(enhance: false, shadowLift: 0, temporalBlend: 0, targetFPS: 60)
         }
-        if luma >= 0.22 {
-            return LowLightDecision(enhance: true, shadowLift: 0.18, temporalBlend: 0.30, targetFPS: 30)
+        if luma >= 0.28 {
+            return LowLightDecision(enhance: true, shadowLift: 0.24, temporalBlend: 0.38, targetFPS: 30)
         }
-        return LowLightDecision(enhance: true, shadowLift: 0.34, temporalBlend: 0.50, targetFPS: 30)
+        return LowLightDecision(enhance: true, shadowLift: 0.46, temporalBlend: 0.62, targetFPS: 30)
     }
 }
 
@@ -105,10 +105,23 @@ final class FrameEnhancer {
             curve.point4 = CGPoint(x: 1.0, y: 1.0)
             image = curve.outputImage ?? image
 
+            // Lift exposure and crush sensor noise before sharpening, otherwise the unsharp pass
+            // amplifies exactly the grain that makes landmarks jump in the dark.
+            let exposure = CIFilter.exposureAdjust()
+            exposure.inputImage = image
+            exposure.ev = Float(lift * 1.5)
+            image = exposure.outputImage ?? image
+
+            let noise = CIFilter.noiseReduction()
+            noise.inputImage = image
+            noise.noiseLevel = 0.02
+            noise.sharpness = 0.35
+            image = noise.outputImage ?? image
+
             let sharp = CIFilter.unsharpMask()
             sharp.inputImage = image
-            sharp.radius = 1.4
-            sharp.intensity = 0.45
+            sharp.radius = 1.2
+            sharp.intensity = 0.40
             image = sharp.outputImage ?? image
         }
 

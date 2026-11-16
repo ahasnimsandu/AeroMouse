@@ -41,6 +41,7 @@ enum SelfTest {
         localCorrection(&runner)
         gazeModel(&runner)
         tapRobustness(&runner)
+        blinkDetection(&runner)
         fingerFlow(&runner)
         calibrationEndToEnd(&runner)
     }
@@ -764,6 +765,54 @@ enum SelfTest {
         }
         runner.check("tap trainer refuses a hand that never tapped",
                      TapTrainer.suggestion(from: Array(repeating: 0.2, count: 120)) == nil, "")
+    }
+
+    // MARK: Blink click
+
+    private static func blinkDetection(_ runner: inout SelfTestRunner) {
+        // A natural blink is ~0.08 s and must never click.
+        var natural = BlinkDetector()
+        var naturalClicks = 0
+        for frame in 0..<20 {
+            let time = Double(frame) / 60.0
+            let openness = (5...9).contains(frame) ? 0.05 : 0.35
+            if natural.update(openness: openness, time: time) { naturalClicks += 1 }
+        }
+        runner.check("a natural blink does not click", naturalClicks == 0,
+                     "\(naturalClicks) clicks")
+
+        // Holding both eyes shut for a quarter of a second is a deliberate click.
+        var deliberate = BlinkDetector()
+        var deliberateClicks = 0
+        for frame in 0..<40 {
+            let time = Double(frame) / 60.0
+            let openness = (5...20).contains(frame) ? 0.05 : 0.35
+            if deliberate.update(openness: openness, time: time) { deliberateClicks += 1 }
+        }
+        runner.check("a deliberate blink clicks once", deliberateClicks == 1,
+                     "\(deliberateClicks) clicks")
+
+        // A second long blink inside the cooldown must not double-click.
+        var cooldown = BlinkDetector()
+        var cooldownClicks = 0
+        for frame in 0..<60 {
+            let time = Double(frame) / 60.0
+            let closed = (5...16).contains(frame) || (25...36).contains(frame)
+            if cooldown.update(openness: closed ? 0.05 : 0.35, time: time) { cooldownClicks += 1 }
+        }
+        runner.check("blink cooldown blocks a double click", cooldownClicks == 1,
+                     "\(cooldownClicks) clicks")
+
+        // Narrow eyes: the baseline adapts so a blink is still detected.
+        var narrow = BlinkDetector()
+        var narrowClicks = 0
+        for frame in 0..<40 {
+            let time = Double(frame) / 60.0
+            let closed = (5...20).contains(frame)
+            if narrow.update(openness: closed ? 0.03 : 0.22, time: time) { narrowClicks += 1 }
+        }
+        runner.check("blink detection adapts to narrow eyes", narrowClicks == 1,
+                     "\(narrowClicks) clicks")
     }
 
     // MARK: Finger flow

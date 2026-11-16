@@ -237,23 +237,27 @@ struct ControlPanelView: View {
     // MARK: How to use
 
     private var howToCard: some View {
-        Card(title: "Two gestures",
-             subtitle: "That is all AeroMouse does. Nothing else fires by accident.") {
-            GestureRow(icon: "hand.pinch.fill",
-                       title: "Click",
-                       detail: "Pinch your thumb and index finger together. Release to let go.")
-            Divider()
+        Card(title: "How to use",
+             subtitle: "Your hand only moves the pointer. Nothing else fires by accident.") {
             GestureRow(icon: "hand.point.up.left.fill",
-                       title: "Right click",
-                       detail: "Pinch your thumb and middle finger together. Keep the index finger clear.")
+                       title: "Move",
+                       detail: "Move your right hand to move the pointer. Keep it inside the camera frame.")
+            Divider()
+            GestureRow(icon: "eye.fill",
+                       title: "Click",
+                       detail: "Close both eyes for about a quarter of a second, then open them. That is one left click.")
             Divider()
             Text("Live readings")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            MetricRow(label: "Thumb → index", value: pinchText(app.snapshot.pinchIndex),
-                      tint: app.snapshot.pinchIndex < app.settings.gestures.pinchOn ? .green : .secondary)
-            MetricRow(label: "Thumb → middle", value: pinchText(app.snapshot.pinchMiddle),
-                      tint: app.snapshot.pinchMiddle < app.settings.gestures.middlePinchOn ? .green : .secondary)
+            MetricRow(label: "Face", value: app.snapshot.hasFace ? "detected" : "not found",
+                      tint: app.snapshot.hasFace ? .green : .orange)
+            MetricRow(label: "Eye openness",
+                      value: String(format: "%.0f%%", app.snapshot.gazeOpenness * 100),
+                      tint: app.snapshot.gazeOpenness > 0.30 ? .green : .orange)
+            Text("A natural blink is too quick to click. Hold both eyes shut briefly to click.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 

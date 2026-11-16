@@ -105,7 +105,7 @@ final class AppState: ObservableObject {
         refreshPermissions()
         updateScreen()
 
-        if !UserDefaults.standard.bool(forKey: "hasSeenIntro_v2") {
+        if !UserDefaults.standard.bool(forKey: "hasSeenIntro_v3") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self else { return }
                 IntroWindowController.shared.show(app: self)

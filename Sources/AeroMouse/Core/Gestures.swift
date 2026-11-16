@@ -14,7 +14,7 @@ struct GestureConfig: Codable {
     var tapOff: Double = 0.125
     var tapBaseline: Double = 0.22    // learned resting gap, overwritten by the trainer
     var tapDrop: Double = 0.05        // how far below the resting gap a tap must go
-    var pinchClickEnabled: Bool = true
+    var pinchClickEnabled: Bool = false
     var pinchOn: Double = 0.42        // thumb-index distance / hand scale to close
     var pinchOff: Double = 0.62       // ...and to open again (hysteresis gap kills flicker)
 
@@ -32,10 +32,10 @@ struct GestureConfig: Codable {
     var doubleClickWindow: Double = 0.34
     var freezeOn: Double = 0.80       // closed fist
     var freezeOff: Double = 0.62
-    var rightClickEnabled: Bool = true
+    var rightClickEnabled: Bool = false
     var doubleClickEnabled: Bool = false
     var freezeEnabled: Bool = false
-    var dragEnabled: Bool = true
+    var dragEnabled: Bool = false
 }
 
 // MARK: - Events

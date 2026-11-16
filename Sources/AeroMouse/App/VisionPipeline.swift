@@ -102,13 +102,14 @@ struct HandFrame {
 }
 
 struct FaceFrame {
-    var gaze: GazeFeatures
+    var gaze: GazeFeatures?
+    var openness: Double
     var confidence: Double
 }
 
-/// Runs Vision hand-pose every frame and face landmarks every third frame (gaze is a slow signal,
-/// and the hand request is the latency-critical one). Vision executes the hand-pose network on the
-/// Neural Engine, so this is already the NPU path.
+/// Runs Vision hand-pose every frame and face landmarks every second frame. Face landmarks drive
+/// the blink click, and a blink lasts only a couple of frames, so every third frame missed too many
+/// of them. Vision executes both networks on the Neural Engine, so this is already the NPU path.
 final class VisionPipeline {
     private let handRequest = VNDetectHumanHandPoseRequest()
     private let faceRequest = VNDetectFaceLandmarksRequest()
@@ -120,7 +121,7 @@ final class VisionPipeline {
                  time: Double) -> (hand: HandFrame?, face: FaceFrame?) {
         frameIndex += 1
         var requests: [VNRequest] = [handRequest]
-        let runFace = (frameIndex % 3) == 0
+        let runFace = (frameIndex % 2) == 0
         if runFace { requests.append(faceRequest) }
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
@@ -187,6 +188,16 @@ final class VisionPipeline {
         guard leftBox.width > 0.0015, leftBox.height > 0.0015,
               rightBox.width > 0.0015, rightBox.height > 0.0015 else { return nil }
 
+        // Eye opening relative to its own width: collapses during a blink. Both eyes must be
+        // closed at once, so take the minimum of the two; a wink or a bad landmark on one eye
+        // should not click.
+        func openness(_ box: CGRect) -> Double {
+            let eyeWidth = max(box.width * aspect, 1e-6)
+            let ratio = box.height / eyeWidth
+            return min(max((ratio - 0.12) / 0.18, 0), 1)
+        }
+        let eyeOpenness = min(openness(leftBox), openness(rightBox))
+
         // Iris position inside each eye opening: the core gaze signal on a camera without depth.
         func irisOffset(_ pupil: CGPoint?, _ box: CGRect) -> (x: Double, y: Double)? {
             guard let pupil, box.width > 1e-6, box.height > 1e-6 else { return nil }
@@ -196,18 +207,14 @@ final class VisionPipeline {
 
         let left = irisOffset(landmarks.leftPupil?.pointsInImage(imageSize: unit).first, leftBox)
         let right = irisOffset(landmarks.rightPupil?.pointsInImage(imageSize: unit).first, rightBox)
-        // One visible pupil still carries usable gaze; only a fully missing gaze is rejected.
-        guard let primary = left ?? right else { return nil }
-        let secondary = left == nil ? primary : (right ?? primary)
 
-        // Eye opening relative to its own width: collapses during a blink, which is where most
-        // bad gaze samples come from. Width is aspect-corrected so the ratio is physical.
-        let eyeWidth = max(leftBox.width * aspect, 1e-6)
-        let aspectRatio = leftBox.height / eyeWidth
-        let openness = min(max((aspectRatio - 0.12) / 0.18, 0), 1)
-
-        let box = face.boundingBox
-        let gaze = GazeFeatures(irisX: (primary.x + secondary.x) / 2,
+        // Blink detection needs the eye boxes only; gaze needs at least one pupil. Keeping these
+        // separate means a blink still reports openness even when the pupils disappear.
+        var gaze: GazeFeatures?
+        if let primary = left ?? right {
+            let secondary = left == nil ? primary : (right ?? primary)
+            let box = face.boundingBox
+            gaze = GazeFeatures(irisX: (primary.x + secondary.x) / 2,
                                 irisY: (primary.y + secondary.y) / 2,
                                 yaw: face.yaw?.doubleValue ?? 0,
                                 roll: face.roll?.doubleValue ?? 0,
@@ -219,7 +226,8 @@ final class VisionPipeline {
                                 headX: Double(box.midX),
                                 headY: Double(box.midY),
                                 headScale: Double(box.width) * aspect,
-                                openness: openness)
-        return FaceFrame(gaze: gaze, confidence: Double(face.confidence))
+                                openness: eyeOpenness)
+        }
+        return FaceFrame(gaze: gaze, openness: eyeOpenness, confidence: Double(face.confidence))
     }
 }
