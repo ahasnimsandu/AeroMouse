@@ -353,24 +353,6 @@ final class TrackingEngine {
             anchor = refined
         }
 
-        // Edge reach: when the hand sits at the edge of the camera frame, nudge the anchor outward
-        // so the pointer can still reach the corresponding screen edge instead of stopping early.
-        let reachAspect = max(vision.lastAspect, 0.1)
-        var reachAnchor = anchor
-        let nx = anchor.x / reachAspect
-        let ny = anchor.y
-        let margin = 0.12
-        if nx < margin {
-            reachAnchor.x = anchor.x - (margin - nx) * reachAspect * 0.4
-        } else if nx > 1 - margin {
-            reachAnchor.x = anchor.x + (nx - (1 - margin)) * reachAspect * 0.4
-        }
-        if ny < margin {
-            reachAnchor.y = anchor.y - (margin - ny) * 0.4
-        } else if ny > 1 - margin {
-            reachAnchor.y = anchor.y + (ny - (1 - margin)) * 0.4
-        }
-        anchor = reachAnchor
 
         // Before calibration there is no model, so fall back to a plain mirrored, aspect-corrected
         // mapping. It is rough, but it tracks the hand instead of pinning the pointer to a corner,

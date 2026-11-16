@@ -268,6 +268,13 @@ enum SelfTest {
 
     private static func gestures(_ runner: inout SelfTestRunner) {
         var config = GestureConfig()
+        // The shipped defaults only enable pinch and right click; these checks exercise the
+        // optional detectors too, so switch them on explicitly.
+        config.tapEnabled = true
+        config.pinchClickEnabled = false
+        config.scrollEnabled = true
+        config.freezeEnabled = true
+        config.doubleClickEnabled = true
         config.minDownFrames = 2
         config.minUpFrames = 2
 
@@ -699,7 +706,9 @@ enum SelfTest {
     // MARK: Tap tuning
 
     private static func tapRobustness(_ runner: inout SelfTestRunner) {
-        let config = GestureConfig()
+        var config = GestureConfig()
+        config.tapEnabled = true
+        config.pinchClickEnabled = false
         var rng = SplitMix64(seed: 404)
 
         // A relaxed hand: thumb resting near the finger, slow drift, sensor noise. This is the case

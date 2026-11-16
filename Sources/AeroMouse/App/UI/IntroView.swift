@@ -17,21 +17,15 @@ struct IntroView: View {
         IntroPage(icon: "hand.raised.fill",
                   title: "Point with your hand",
                   subtitle: "AeroMouse turns your webcam into a precise mouse. No extra hardware, no dongle — just your hand in front of the camera."),
-        IntroPage(icon: "hand.tap.fill",
-                  title: "Tap to click",
-                  subtitle: "Tap your thumb against the side of your index finger, like Apple Watch double tap. A quick tap clicks; keep them together and move to drag."),
+        IntroPage(icon: "hand.pinch.fill",
+                  title: "Pinch to click",
+                  subtitle: "Bring your thumb and index finger together. That is a left click. Separate them to release."),
         IntroPage(icon: "hand.point.up.left.fill",
                   title: "Right click",
-                  subtitle: "Tap your thumb against your middle finger instead. Same gesture, different finger."),
-        IntroPage(icon: "arrow.up.arrow.down",
-                  title: "Scroll",
-                  subtitle: "Hold your index and middle fingers together, keep the thumb away, then move your hand up or down. The cursor stays where it is."),
-        IntroPage(icon: "arrow.up.right.and.arrow.down.left",
-                  title: "Reach every corner",
-                  subtitle: "Move closer to the camera for full control. If your hand leaves the frame, AeroMouse glides to the edge and picks up where you left off."),
+                  subtitle: "Bring your thumb and middle finger together. That is a right click. Index finger stays clear."),
         IntroPage(icon: "checkmark.circle.fill",
                   title: "You're ready",
-                  subtitle: "Allow camera and Accessibility access, calibrate on your screen, then teach it your tap. You can reopen this guide from the menu bar."),
+                  subtitle: "Allow camera and Accessibility access, then calibrate on your screen. Move your hand to move the pointer. You can reopen this guide from the menu bar."),
     ]
 
     var body: some View {
@@ -132,7 +126,7 @@ struct IntroView: View {
     }
 
     private func finish() {
-        UserDefaults.standard.set(true, forKey: "hasSeenIntro")
+        UserDefaults.standard.set(true, forKey: "hasSeenIntro_v2")
         onDismiss()
     }
 }

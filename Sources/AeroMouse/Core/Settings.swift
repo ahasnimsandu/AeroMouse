@@ -59,9 +59,19 @@ enum ModelStore {
 
     static func loadSettings() -> AppSettings {
         guard let data = try? Data(contentsOf: settingsURL),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
+              var settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
             return AppSettings()
         }
+        // AeroMouse ships exactly two gestures. Settings from older builds may still have tap,
+        // scroll, fist or double-click enabled, which is what made the pointer unpredictable;
+        // force the simple gesture set on load instead of trusting old saved values.
+        settings.gestures.tapEnabled = false
+        settings.gestures.scrollEnabled = false
+        settings.gestures.freezeEnabled = false
+        settings.gestures.doubleClickEnabled = false
+        settings.gestures.pinchClickEnabled = true
+        settings.gestures.rightClickEnabled = true
+        settings.eyeAssistEnabled = false
         return settings
     }
 

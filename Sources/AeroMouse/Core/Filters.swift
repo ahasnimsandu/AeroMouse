@@ -3,17 +3,17 @@ import Foundation
 // MARK: - Settings surface for the pointer pipeline
 
 struct SmoothingConfig: Codable {
-    var minCutoff: Double = 1.6          // Hz. Lower = silkier, higher = snappier.
-    var beta: Double = 0.028             // Speed coupling: lets fast motion through almost unfiltered.
+    var minCutoff: Double = 1.8          // Hz. Lower = silkier, higher = snappier.
+    var beta: Double = 0.030             // Speed coupling: lets fast motion through almost unfiltered.
     var derivativeCutoff: Double = 1.0   // Smooths the speed estimate, which keeps beta from firing on noise.
-    var predictionMs: Double = 16        // Constant-velocity lookahead to cancel filter lag.
-    var predictionSpeedLow: Double = 80  // px/s below which prediction is faded out
-    var predictionSpeedHigh: Double = 360
-    var precisionGain: Double = 0.65     // Extra gain reduction while moving slowly.
-    var precisionSpeedLow: Double = 50   // px/s where precision mode starts
-    var precisionSpeedHigh: Double = 320 // px/s where full gain resumes
-    var deadband: Double = 0.9           // px of hysteresis before the cursor is re-emitted
-    var outlierGate: Double = 180        // px jump rejected outright
+    var predictionMs: Double = 14        // Constant-velocity lookahead to cancel filter lag.
+    var predictionSpeedLow: Double = 90  // px/s below which prediction is faded out
+    var predictionSpeedHigh: Double = 380
+    var precisionGain: Double = 0.62     // Extra gain reduction while moving slowly.
+    var precisionSpeedLow: Double = 55   // px/s where precision mode starts
+    var precisionSpeedHigh: Double = 340 // px/s where full gain resumes
+    var deadband: Double = 1.1           // px of hysteresis before the cursor is re-emitted
+    var outlierGate: Double = 150        // px jump rejected outright
 }
 
 // MARK: - One Euro filter

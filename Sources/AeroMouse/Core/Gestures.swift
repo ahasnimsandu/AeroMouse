@@ -5,7 +5,7 @@ import Foundation
 struct GestureConfig: Codable {
     /// Tap: the thumb pad meets the edge of the index finger, like Apple Watch double tap.
     /// Measured in hand units, so it does not depend on how big the hand or the frame is.
-    var tapEnabled: Bool = true
+    var tapEnabled: Bool = false
     /// A fixed threshold cannot work: a relaxed thumb sits at 0.10 for one person and 0.30 for
     /// another, so the detector learns the resting gap and requires a real drop below it. The
     /// absolute value stays as a ceiling, so a bad baseline can never make it trigger on rest.
@@ -14,12 +14,12 @@ struct GestureConfig: Codable {
     var tapOff: Double = 0.125
     var tapBaseline: Double = 0.22    // learned resting gap, overwritten by the trainer
     var tapDrop: Double = 0.05        // how far below the resting gap a tap must go
-    var pinchClickEnabled: Bool = false
+    var pinchClickEnabled: Bool = true
     var pinchOn: Double = 0.42        // thumb-index distance / hand scale to close
     var pinchOff: Double = 0.62       // ...and to open again (hysteresis gap kills flicker)
 
     /// Scroll: index and middle fingers held together, thumb clear, hand moved up or down.
-    var scrollEnabled: Bool = true
+    var scrollEnabled: Bool = false
     var scrollMinGap: Double = 0.40   // gap that enters scroll mode
     var scrollMaxGap: Double = 0.55   // gap that leaves it again
     var scrollThumbClear: Double = 0.60  // thumb must be this far from the index, or it is a tap
@@ -33,8 +33,8 @@ struct GestureConfig: Codable {
     var freezeOn: Double = 0.80       // closed fist
     var freezeOff: Double = 0.62
     var rightClickEnabled: Bool = true
-    var doubleClickEnabled: Bool = true
-    var freezeEnabled: Bool = true
+    var doubleClickEnabled: Bool = false
+    var freezeEnabled: Bool = false
     var dragEnabled: Bool = true
 }
 
